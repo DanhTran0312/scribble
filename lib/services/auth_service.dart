@@ -1,0 +1,113 @@
+import 'dart:async';
+
+import '../models/user.dart';
+import '../utils/api_constants.dart';
+import 'api_client.dart';
+
+class AuthService {
+  final ApiClient _apiClient = ApiClient();
+  final StreamController<User?> _userController =
+      StreamController<User?>.broadcast();
+  User? _currentUser;
+
+  // Singleton pattern
+  static final AuthService _instance = AuthService._internal();
+
+  factory AuthService() {
+    return _instance;
+  }
+
+  AuthService._internal();
+
+  // Initialize and check if user is already logged in
+  Future<void> init() async {
+    await _apiClient.init();
+
+    if (_apiClient.isAuthenticated) {
+      try {
+        await getCurrentUser();
+      } catch (e) {
+        // Token might be invalid, clear it
+        await logout();
+      }
+    }
+  }
+
+  // Login with username
+  Future<User> login({required String username, String? avatarUrl}) async {
+    try {
+      final response = await _apiClient.post(
+        ApiConstants.login,
+        data: {'username': username, 'avatar_url': avatarUrl},
+      );
+
+      // Save auth token
+      if (response.containsKey('access_token')) {
+        await _apiClient.setAuthToken(response['access_token']);
+      }
+
+      // Get user info
+      await getCurrentUser();
+
+      return _currentUser!;
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  // Logout
+  Future<void> logout() async {
+    await _apiClient.clearAuthToken();
+    _currentUser = null;
+    _userController.add(null);
+  }
+
+  // Get current user
+  Future<User?> getCurrentUser() async {
+    if (!_apiClient.isAuthenticated) {
+      _currentUser = null;
+      _userController.add(null);
+      return null;
+    }
+
+    try {
+      final userData = await _apiClient.get(ApiConstants.currentUser);
+      _currentUser = User.fromJson(userData);
+      _userController.add(_currentUser);
+      return _currentUser;
+    } catch (e) {
+      // If unauthorized, clear token
+      if (e is ApiException && e.statusCode == 401) {
+        await logout();
+      }
+      rethrow;
+    }
+  }
+
+  // Update user
+  Future<User> updateUser(User user) async {
+    try {
+      // In a full implementation, this would call an API endpoint
+      // For now, we'll just update locally
+      _currentUser = user;
+      _userController.add(_currentUser);
+      return _currentUser!;
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  // Stream of user changes
+  Stream<User?> get userChanges => _userController.stream;
+
+  // Current user getter
+  User? get currentUser => _currentUser;
+
+  // Check if logged in
+  bool get isLoggedIn => _currentUser != null;
+
+  // Cleanup
+  void dispose() {
+    _userController.close();
+  }
+}

@@ -9,6 +9,15 @@ import '../utils/api_constants.dart';
 import 'api_client.dart';
 import 'websocket_service.dart';
 
+class RoomResult {
+  final bool success;
+  final Room? room;
+  final List<Room>? rooms;
+  final String? error;
+
+  RoomResult({required this.success, this.room, this.rooms, this.error});
+}
+
 class RoomService {
   final ApiClient _apiClient = ApiClient();
   WebSocketService? _wsService;
@@ -20,8 +29,17 @@ class RoomService {
   final StreamController<List<Message>> _messageUpdatesController =
       StreamController<List<Message>>.broadcast();
 
+  // Singleton pattern
+  static final RoomService _instance = RoomService._internal();
+
+  factory RoomService() {
+    return _instance;
+  }
+
+  RoomService._internal();
+
   // Get available rooms
-  Future<List<Room>> getAvailableRooms() async {
+  Future<RoomResult> getAvailableRooms() async {
     try {
       final response = await _apiClient.get(ApiConstants.rooms);
 
@@ -39,22 +57,27 @@ class RoomService {
         roomsData = response['rooms'] as List<dynamic>;
       } else {
         // If response has no recognized wrapper, assume it's a direct list
-        roomsData = response as List<dynamic>;
+        // roomsData = response is List ? response : [response];
       }
 
-      return roomsData
-          .map((roomData) => Room.fromJson(roomData as Map<String, dynamic>))
-          .toList();
+      final rooms =
+          roomsData
+              .map(
+                (roomData) => Room.fromJson(roomData as Map<String, dynamic>),
+              )
+              .toList();
+
+      return RoomResult(success: true, rooms: rooms);
     } catch (e) {
       if (kDebugMode) {
         print('Error getting available rooms: $e');
       }
-      rethrow;
+      return RoomResult(success: false, error: e.toString());
     }
   }
 
   // Create a new room
-  Future<Room> createRoom({
+  Future<RoomResult> createRoom({
     required String name,
     int maxPlayers = 8,
     int maxRounds = 3,
@@ -73,7 +96,7 @@ class RoomService {
         'use_ai': useAI,
       };
 
-      if (isPrivate && password != null) {
+      if (isPrivate && password != null && password.isNotEmpty) {
         data['password'] = password;
       }
 
@@ -81,22 +104,24 @@ class RoomService {
 
       final room = Room.fromJson(response);
       _roomUpdatesController.add(room);
-      return room;
+      return RoomResult(success: true, room: room);
     } catch (e) {
       if (kDebugMode) {
         print('Error creating room: $e');
       }
-      rethrow;
+      return RoomResult(success: false, error: e.toString());
     }
   }
 
   // Join a room
-  Future<Room> joinRoom(String roomId, {String? password}) async {
+  Future<RoomResult> joinRoom(String roomId, {String? password}) async {
     try {
       final endpoint = ApiConstants.joinRoom(roomId);
 
-      final data =
-          password != null ? {'password': password} : <String, dynamic>{};
+      final data = <String, dynamic>{};
+      if (password != null && password.isNotEmpty) {
+        data['password'] = password;
+      }
 
       final response = await _apiClient.post(endpoint, data: data);
 
@@ -106,17 +131,17 @@ class RoomService {
       // Connect to WebSocket after joining
       _connectToRoomWebSocket(roomId);
 
-      return room;
+      return RoomResult(success: true, room: room);
     } catch (e) {
       if (kDebugMode) {
         print('Error joining room: $e');
       }
-      rethrow;
+      return RoomResult(success: false, error: e.toString());
     }
   }
 
   // Leave a room
-  Future<void> leaveRoom(String roomId) async {
+  Future<bool> leaveRoom(String roomId) async {
     try {
       final endpoint = ApiConstants.leaveRoom(roomId);
 
@@ -124,16 +149,18 @@ class RoomService {
 
       // Disconnect WebSocket
       _disconnectFromRoomWebSocket();
+
+      return true;
     } catch (e) {
       if (kDebugMode) {
         print('Error leaving room: $e');
       }
-      rethrow;
+      return false;
     }
   }
 
   // Update room settings
-  Future<Room> updateRoomSettings({
+  Future<RoomResult> updateRoomSettings({
     required String roomId,
     String? name,
     int? maxPlayers,
@@ -162,26 +189,30 @@ class RoomService {
 
       final room = Room.fromJson(response);
       _roomUpdatesController.add(room);
-      return room;
+      return RoomResult(success: true, room: room);
     } catch (e) {
       if (kDebugMode) {
         print('Error updating room settings: $e');
       }
-      rethrow;
+      return RoomResult(success: false, error: e.toString());
     }
   }
 
   // Toggle player ready status
-  Future<void> toggleReady(String roomId, bool isReady) async {
+  Future<bool> toggleReady({
+    required String roomId,
+    required bool isReady,
+  }) async {
     try {
       final endpoint = ApiConstants.readyStatus(roomId);
 
       await _apiClient.post(endpoint, data: {'is_ready': isReady});
+      return true;
     } catch (e) {
       if (kDebugMode) {
         print('Error toggling ready status: $e');
       }
-      rethrow;
+      return false;
     }
   }
 
@@ -311,6 +342,8 @@ class RoomService {
     _wsService!.drawingUpdates.listen(_handleDrawingUpdate);
     _wsService!.gameStateUpdates.listen(_handleGameStateUpdate);
     _wsService!.chatMessages.listen(_handleChatMessages);
+    _wsService!.userUpdates.listen(_handleUserUpdate);
+    _wsService!.errors.listen(_handleError);
   }
 
   void _handleDrawingUpdate(Map<String, dynamic> data) {
@@ -357,6 +390,29 @@ class RoomService {
           print('Error parsing chat messages: $e');
         }
       }
+    } else if (data.containsKey('message')) {
+      try {
+        final messageData = data['message'] as Map<String, dynamic>;
+        final message = Message.fromJson(messageData);
+        _messageUpdatesController.add([message]);
+      } catch (e) {
+        if (kDebugMode) {
+          print('Error parsing chat message: $e');
+        }
+      }
+    }
+  }
+
+  void _handleUserUpdate(Map<String, dynamic> data) {
+    // Pass user connection/disconnection events to relevant controllers
+    if (kDebugMode) {
+      print('User update: $data');
+    }
+  }
+
+  void _handleError(Map<String, dynamic> data) {
+    if (kDebugMode) {
+      print('WebSocket error: $data');
     }
   }
 

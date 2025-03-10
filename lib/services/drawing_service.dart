@@ -11,6 +11,15 @@ class DrawingService {
   final ApiClient _apiClient = ApiClient();
   WebSocketService? _webSocketService;
 
+  // Singleton pattern
+  static final DrawingService _instance = DrawingService._internal();
+
+  factory DrawingService() {
+    return _instance;
+  }
+
+  DrawingService._internal();
+
   // Update drawing via REST API
   Future<Map<String, dynamic>> updateDrawing(
     String roomId,
@@ -34,7 +43,7 @@ class DrawingService {
   }
 
   // Generate AI drawing
-  Future<Map<String, dynamic>> generateAiDrawing(
+  Future<AIDrawingResponse> generateAiDrawing(
     String wordPrompt, {
     String style = 'doodle',
   }) async {
@@ -44,7 +53,7 @@ class DrawingService {
         data: {'word_prompt': wordPrompt, 'style': style},
       );
 
-      return response;
+      return AIDrawingResponse.fromJson(response);
     } catch (e) {
       if (kDebugMode) {
         print('Error generating AI drawing: $e');
@@ -94,29 +103,9 @@ class DrawingService {
   void undoLastStroke(String roomId) {
     sendDrawingUpdate(roomId, DrawingUpdate(undoLastStroke: true));
   }
-}
 
-// DrawingUpdate class (keep this aligned with the backend)
-class DrawingUpdate {
-  final DrawStroke? addStroke;
-  final DrawPoint? addPointToLastStroke;
-  final bool undoLastStroke;
-  final bool clear;
-
-  DrawingUpdate({
-    this.addStroke,
-    this.addPointToLastStroke,
-    this.undoLastStroke = false,
-    this.clear = false,
-  });
-
-  Map<String, dynamic> toJson() {
-    return {
-      if (addStroke != null) 'add_stroke': addStroke!.toJson(),
-      if (addPointToLastStroke != null)
-        'add_point_to_last_stroke': addPointToLastStroke!.toJson(),
-      if (undoLastStroke) 'undo_last_stroke': true,
-      if (clear) 'clear': true,
-    };
+  // Cleanup
+  void dispose() {
+    _webSocketService = null;
   }
 }

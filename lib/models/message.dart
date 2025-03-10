@@ -2,7 +2,7 @@ import 'package:equatable/equatable.dart';
 
 import 'user.dart';
 
-enum MessageType { chat, system, guessCorrect, drawing }
+enum MessageType { chat, system, guessCorrect, drawing, hint }
 
 class Message extends Equatable {
   final String id;
@@ -46,31 +46,64 @@ class Message extends Equatable {
       'content': content,
       'timestamp': timestamp.toIso8601String(),
       'type': type.name,
-      'isCorrectGuess': isCorrectGuess,
+      'is_correct_guess': isCorrectGuess, // Snake case for backend
     };
   }
 
   factory Message.fromJson(Map<String, dynamic> json) {
     return Message(
-      id: json['id'],
+      id: json['id'] ?? '',
       sender: json['sender'] != null ? User.fromJson(json['sender']) : null,
-      content: json['content'],
-      timestamp: DateTime.parse(json['timestamp']),
-      type: MessageType.values.firstWhere(
-        (type) => type.name == json['type'],
-        orElse: () => MessageType.chat,
-      ),
-      isCorrectGuess: json['isCorrectGuess'] ?? false,
+      content: json['content'] ?? '',
+      timestamp:
+          json['timestamp'] != null
+              ? DateTime.parse(json['timestamp'])
+              : DateTime.now(),
+      type: _parseMessageType(json['type']),
+      isCorrectGuess:
+          json['is_correct_guess'] ?? json['isCorrectGuess'] ?? false,
     );
+  }
+
+  static MessageType _parseMessageType(String? type) {
+    if (type == null) return MessageType.chat;
+
+    switch (type.toLowerCase()) {
+      case 'chat':
+        return MessageType.chat;
+      case 'system':
+        return MessageType.system;
+      case 'guesscorrect':
+      case 'guess_correct':
+        return MessageType.guessCorrect;
+      case 'drawing':
+        return MessageType.drawing;
+      case 'hint':
+        return MessageType.hint;
+      default:
+        return MessageType.chat;
+    }
   }
 
   @override
   List<Object?> get props => [
-        id,
-        sender,
-        content,
-        timestamp,
-        type,
-        isCorrectGuess,
-      ];
+    id,
+    sender,
+    content,
+    timestamp,
+    type,
+    isCorrectGuess,
+  ];
+}
+
+// Chat message to be sent to the server
+class ChatMessage {
+  final String content;
+  final String roomId;
+
+  ChatMessage({required this.content, required this.roomId});
+
+  Map<String, dynamic> toJson() {
+    return {'content': content, 'room_id': roomId};
+  }
 }

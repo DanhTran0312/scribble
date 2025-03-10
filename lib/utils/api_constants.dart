@@ -33,4 +33,12 @@ class ApiConstants {
   static String updateDrawing(String roomId) =>
       '/api/drawings/rooms/$roomId/update';
   static const String generateAiDrawing = '/api/drawings/ai-generate';
+
+  // Leaderboard endpoint
+  static const String leaderboard = '/api/leaderboard';
+
+  // Helper function to replace roomId in URL
+  static String replaceRoomId(String url, String roomId) {
+    return url.replaceAll('{roomId}', roomId);
+  }
 }

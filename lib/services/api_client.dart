@@ -9,8 +9,9 @@ import '../utils/api_constants.dart';
 class ApiException implements Exception {
   final String message;
   final int? statusCode;
+  final dynamic data;
 
-  ApiException(this.message, {this.statusCode});
+  ApiException(this.message, {this.statusCode, this.data});
 
   @override
   String toString() => 'ApiException: $message (status: $statusCode)';
@@ -31,22 +32,51 @@ class ApiClient {
 
   // Initialize and load auth token
   Future<void> init() async {
-    final prefs = await SharedPreferences.getInstance();
-    _authToken = prefs.getString('auth_token');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _authToken = prefs.getString('auth_token');
+      if (kDebugMode) {
+        print(
+          'ApiClient initialized with token: ${_authToken != null ? 'exists' : 'null'}',
+        );
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error initializing ApiClient: $e');
+      }
+    }
   }
 
   // Set auth token
   Future<void> setAuthToken(String token) async {
     _authToken = token;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('auth_token', token);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('auth_token', token);
+      if (kDebugMode) {
+        print('Auth token saved: ${token.substring(0, 10)}...');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error saving auth token: $e');
+      }
+    }
   }
 
   // Clear auth token
   Future<void> clearAuthToken() async {
     _authToken = null;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('auth_token');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('auth_token');
+      if (kDebugMode) {
+        print('Auth token cleared');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error clearing auth token: $e');
+      }
+    }
   }
 
   // Get auth token
@@ -167,38 +197,62 @@ class ApiClient {
   Map<String, dynamic> _handleResponse(http.Response response) {
     if (kDebugMode) {
       print('Response status: ${response.statusCode}');
-      print(
-        'Response body: ${response.body.substring(0, min(500, response.body.length))}...',
+      String logBody = response.body;
+      if (logBody.length > 1000) {
+        logBody = '${logBody.substring(0, 1000)}... [truncated]';
+      }
+      print('Response body: $logBody');
+    }
+
+    // Handle empty responses
+    if (response.body.isEmpty) {
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return {}; // Empty successful response
+      } else {
+        throw ApiException(
+          'Empty response with status: ${response.statusCode}',
+          statusCode: response.statusCode,
+        );
+      }
+    }
+
+    // Parse response body
+    Map<String, dynamic> responseData;
+    try {
+      responseData = jsonDecode(response.body);
+    } catch (e) {
+      throw ApiException(
+        'Failed to parse response: $e',
+        statusCode: response.statusCode,
+        data: response.body,
       );
     }
 
     if (response.statusCode >= 200 && response.statusCode < 300) {
       // Success
-      if (response.body.isEmpty) {
-        return {};
-      }
-
-      try {
-        return jsonDecode(response.body);
-      } catch (e) {
-        throw ApiException('Failed to parse response: $e');
-      }
+      return responseData;
     } else {
       // Error
       String message = 'Request failed with status: ${response.statusCode}';
 
-      try {
-        final errorData = jsonDecode(response.body);
-        if (errorData.containsKey('detail')) {
-          message = errorData['detail'];
-        }
-      } catch (_) {
-        // Couldn't parse error response
+      if (responseData.containsKey('detail')) {
+        message = responseData['detail'];
+      } else if (responseData.containsKey('message')) {
+        message = responseData['message'];
+      } else if (responseData.containsKey('error')) {
+        message = responseData['error'];
       }
 
-      throw ApiException(message, statusCode: response.statusCode);
+      throw ApiException(
+        message,
+        statusCode: response.statusCode,
+        data: responseData,
+      );
     }
   }
 
-  int min(int a, int b) => a < b ? a : b;
+  // Clean up resources
+  void dispose() {
+    _client.close();
+  }
 }

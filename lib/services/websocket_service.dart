@@ -31,7 +31,9 @@ class WebSocketMessage {
   }
 
   static MessageType _parseMessageType(String? type) {
-    switch (type) {
+    if (type == null) return MessageType.error;
+
+    switch (type.toLowerCase()) {
       case 'chat':
         return MessageType.chat;
       case 'drawing':
@@ -44,15 +46,16 @@ class WebSocketMessage {
         return MessageType.userConnected;
       case 'user_disconnected':
         return MessageType.userDisconnected;
-      case 'error':
-        return MessageType.error;
       default:
         return MessageType.error;
     }
   }
 
   Map<String, dynamic> toJson() {
-    return {'type': type.toString().split('.').last, 'data': data};
+    return {
+      'type': type.toString().split('.').last.toLowerCase(),
+      'data': data,
+    };
   }
 }
 
@@ -63,8 +66,10 @@ class WebSocketService {
   bool _isConnected = false;
   bool _isReconnecting = false;
   Timer? _reconnectTimer;
+  Timer? _heartbeatTimer;
   int _reconnectAttempts = 0;
   static const int MAX_RECONNECT_ATTEMPTS = 5;
+  static const int HEARTBEAT_INTERVAL_SECONDS = 30;
 
   // Stream controllers for different message types
   final StreamController<WebSocketMessage> _messageController =
@@ -127,6 +132,9 @@ class WebSocketService {
       _isReconnecting = false;
       _connectionStatusController.add(true);
 
+      // Start heartbeat timer
+      _startHeartbeat();
+
       if (kDebugMode) {
         print('WebSocket connected');
       }
@@ -143,11 +151,39 @@ class WebSocketService {
     }
   }
 
+  // Start heartbeat timer to keep connection alive
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(
+      const Duration(seconds: HEARTBEAT_INTERVAL_SECONDS),
+      (_) => _sendHeartbeat(),
+    );
+  }
+
+  // Send heartbeat message
+  void _sendHeartbeat() {
+    if (_isConnected) {
+      try {
+        _channel?.sink.add(
+          jsonEncode({
+            'type': 'heartbeat',
+            'data': {'timestamp': DateTime.now().toIso8601String()},
+          }),
+        );
+      } catch (e) {
+        if (kDebugMode) {
+          print('Error sending heartbeat: $e');
+        }
+      }
+    }
+  }
+
   // Disconnect WebSocket
   void disconnect({bool isForced = false}) {
     if (!_isConnected && !isForced) return;
 
     _cancelReconnect();
+    _heartbeatTimer?.cancel();
     _isConnected = false;
     _isReconnecting = false;
     _connectionStatusController.add(false);
@@ -186,6 +222,9 @@ class WebSocketService {
         print('Error sending WebSocket message: $e');
       }
       _errorController.add({'message': 'Failed to send message: $e'});
+
+      // Try to reconnect if sending fails
+      _onError(e);
     }
   }
 
@@ -330,6 +369,7 @@ class WebSocketService {
   void dispose() {
     disconnect(isForced: true);
     _cancelReconnect();
+    _heartbeatTimer?.cancel();
 
     _messageController.close();
     _chatController.close();

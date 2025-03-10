@@ -6,6 +6,14 @@ import '../models/user.dart';
 import '../utils/api_constants.dart';
 import 'api_client.dart';
 
+class AuthResult {
+  final bool success;
+  final User? user;
+  final String? error;
+
+  AuthResult({required this.success, this.user, this.error});
+}
+
 class AuthService {
   final ApiClient _apiClient = ApiClient();
   final StreamController<User?> _userController =
@@ -40,7 +48,10 @@ class AuthService {
   }
 
   // Login with username
-  Future<User> login({required String username, String? avatarUrl}) async {
+  Future<AuthResult> login({
+    required String username,
+    String? avatarUrl,
+  }) async {
     try {
       final response = await _apiClient.post(
         ApiConstants.login,
@@ -50,25 +61,42 @@ class AuthService {
       // Save auth token
       if (response.containsKey('access_token')) {
         await _apiClient.setAuthToken(response['access_token']);
+
+        // Get user info
+        final userResponse = await getCurrentUser();
+
+        if (userResponse != null) {
+          return AuthResult(success: true, user: userResponse);
+        } else {
+          return AuthResult(
+            success: false,
+            error: 'Failed to get user details',
+          );
+        }
+      } else {
+        return AuthResult(success: false, error: 'No access token in response');
       }
-
-      // Get user info
-      await getCurrentUser();
-
-      return _currentUser!;
     } catch (e) {
       if (kDebugMode) {
         print('Error logging in: $e');
       }
-      rethrow;
+      return AuthResult(success: false, error: e.toString());
     }
   }
 
   // Logout
-  Future<void> logout() async {
-    await _apiClient.clearAuthToken();
-    _currentUser = null;
-    _userController.add(null);
+  Future<bool> logout() async {
+    try {
+      await _apiClient.clearAuthToken();
+      _currentUser = null;
+      _userController.add(null);
+      return true;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error logging out: $e');
+      }
+      return false;
+    }
   }
 
   // Get current user
@@ -90,8 +118,32 @@ class AuthService {
       }
 
       // If unauthorized, clear token
-      if (e is ApiException && e.statusCode == 401) {
+      if (e is ApiException && (e.statusCode == 401 || e.statusCode == 403)) {
         await logout();
+      }
+      rethrow;
+    }
+  }
+
+  // Update user profile
+  Future<User?> updateUserProfile({String? username, String? avatarUrl}) async {
+    if (!_apiClient.isAuthenticated || _currentUser == null) {
+      return null;
+    }
+
+    try {
+      final data = <String, dynamic>{};
+      if (username != null) data['username'] = username;
+      if (avatarUrl != null) data['avatar_url'] = avatarUrl;
+
+      final response = await _apiClient.patch('/api/users/me', data: data);
+
+      _currentUser = User.fromJson(response);
+      _userController.add(_currentUser);
+      return _currentUser;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error updating user profile: $e');
       }
       rethrow;
     }

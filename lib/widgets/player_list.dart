@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 
 import '../models/user.dart';
+import '../theme/app_theme.dart';
 
 class PlayerListWidget extends StatelessWidget {
   final List<User> players;
   final String currentUserId;
   final bool showScore;
   final String? drawerUserId;
+  final bool showAvatar;
+  final bool compact;
 
   const PlayerListWidget({
     super.key,
@@ -14,11 +17,13 @@ class PlayerListWidget extends StatelessWidget {
     required this.currentUserId,
     this.showScore = false,
     this.drawerUserId,
+    this.showAvatar = true,
+    this.compact = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    // Sort players: drawer first (if game is active), then by score
+    // Sort players: drawer first (if game is active), then by score or readiness
     final sortedPlayers = List<User>.from(players);
 
     sortedPlayers.sort((a, b) {
@@ -27,6 +32,10 @@ class PlayerListWidget extends StatelessWidget {
         if (a.id == drawerUserId) return -1;
         if (b.id == drawerUserId) return 1;
       }
+
+      // Host second
+      if (a.isHost && !b.isHost) return -1;
+      if (!a.isHost && b.isHost) return 1;
 
       // Then by score (if showing scores)
       if (showScore) {
@@ -42,78 +51,42 @@ class PlayerListWidget extends StatelessWidget {
       return a.username.compareTo(b.username);
     });
 
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(
-          bottom: BorderSide(color: Colors.grey.shade300, width: 1),
-        ),
-      ),
-      child: Column(
-        children: [
-          // Header
-          Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16.0,
-              vertical: 8.0,
-            ),
-            decoration: BoxDecoration(
-              color: Theme.of(
-                context,
-              ).colorScheme.primaryContainer.withOpacity(0.3),
-              border: Border(
-                bottom: BorderSide(color: Colors.grey.shade300, width: 1),
-              ),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.people, size: 18),
-                const SizedBox(width: 8),
-                const Text(
-                  'Players',
-                  style: TextStyle(fontWeight: FontWeight.bold),
-                ),
-                const Spacer(),
-                Text(
-                  '${players.length} player${players.length == 1 ? '' : 's'}',
-                  style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                ),
-              ],
-            ),
-          ),
+    // If compact mode, use a more space-efficient layout
+    if (compact) {
+      return ListView.builder(
+        itemCount: sortedPlayers.length,
+        padding: EdgeInsets.zero,
+        physics: const BouncingScrollPhysics(),
+        itemBuilder:
+            (context, index) =>
+                _buildCompactPlayerItem(context, sortedPlayers[index]),
+      );
+    }
 
-          // Player list
-          Expanded(
-            child: ListView.builder(
-              padding: EdgeInsets.zero,
-              itemCount: sortedPlayers.length,
-              itemBuilder: (context, index) {
-                final player = sortedPlayers[index];
-                return _buildPlayerItem(context, player);
-              },
-            ),
-          ),
-        ],
-      ),
+    return ListView.builder(
+      itemCount: sortedPlayers.length,
+      padding: EdgeInsets.zero,
+      physics: const BouncingScrollPhysics(),
+      itemBuilder:
+          (context, index) => _buildPlayerItem(context, sortedPlayers[index]),
     );
   }
 
   Widget _buildPlayerItem(BuildContext context, User player) {
     final isCurrentUser = player.id == currentUserId;
     final isDrawing = player.id == drawerUserId;
+    final isCorrectlyGuessed =
+        player
+            .isReady; // In game mode, "isReady" flag can be used for "has guessed correctly"
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
       decoration: BoxDecoration(
         color:
             isCurrentUser
-                ? Theme.of(
-                  context,
-                ).colorScheme.primaryContainer.withOpacity(0.1)
+                ? AppTheme.primaryColor.withOpacity(0.1)
                 : isDrawing
-                ? Theme.of(
-                  context,
-                ).colorScheme.secondaryContainer.withOpacity(0.1)
+                ? AppTheme.secondaryColor.withOpacity(0.05)
                 : null,
         border: Border(
           bottom: BorderSide(color: Colors.grey.shade200, width: 1),
@@ -121,125 +94,299 @@ class PlayerListWidget extends StatelessWidget {
       ),
       child: Row(
         children: [
-          // Avatar
-          CircleAvatar(
-            radius: 18,
-            backgroundColor:
-                isDrawing
-                    ? Theme.of(context).colorScheme.secondary
-                    : Theme.of(context).colorScheme.primary,
-            child: Text(
-              player.username.substring(0, 1).toUpperCase(),
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.bold,
-              ),
+          // Avatar or drawing indicator
+          if (showAvatar)
+            CircleAvatar(
+              radius: 20,
+              backgroundColor: _getAvatarColor(player, isDrawing),
+              child: _getAvatarContent(player, isDrawing),
             ),
-          ),
 
-          const SizedBox(width: 12),
+          const SizedBox(width: 16),
 
           // Username and status
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // Username row with badges
                 Row(
                   children: [
-                    Text(
-                      player.username,
-                      style: TextStyle(
-                        fontWeight:
-                            isCurrentUser || isDrawing
-                                ? FontWeight.bold
-                                : FontWeight.normal,
+                    Flexible(
+                      child: Text(
+                        player.username,
+                        style: TextStyle(
+                          fontWeight:
+                              isCurrentUser || isDrawing || player.isHost
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                          color: isDrawing ? AppTheme.secondaryColor : null,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    const SizedBox(width: 4),
+
                     if (isCurrentUser)
-                      Text(
-                        '(You)',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.grey.shade600,
-                          fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                    if (player.isHost)
-                      Container(
-                        margin: const EdgeInsets.only(left: 4),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.amber,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: const Text(
-                          'Host',
+                      Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: Text(
+                          '(You)',
                           style: TextStyle(
-                            fontSize: 10,
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
+                            fontSize: 12,
+                            color: Colors.grey.shade600,
+                            fontStyle: FontStyle.italic,
                           ),
                         ),
                       ),
                   ],
                 ),
-                if (!showScore && !player.isHost)
-                  Row(
-                    children: [
-                      Icon(
-                        player.isReady
-                            ? Icons.check_circle
-                            : Icons.circle_outlined,
-                        size: 14,
+
+                const SizedBox(height: 4),
+
+                // Status indicators
+                Row(
+                  children: [
+                    // Role indicators
+                    if (player.isHost)
+                      _buildStatusTag(
+                        label: 'Host',
+                        iconData: Icons.star,
+                        color: Colors.amber,
+                      ),
+
+                    if (isDrawing && showScore)
+                      _buildStatusTag(
+                        label: 'Drawing',
+                        iconData: Icons.brush,
+                        color: AppTheme.secondaryColor,
+                      ),
+
+                    // Readiness indicator (in lobby) or Guessed indicator (in game)
+                    if (!showScore && !player.isHost)
+                      _buildStatusTag(
+                        label: player.isReady ? 'Ready' : 'Not Ready',
+                        iconData:
+                            player.isReady
+                                ? Icons.check_circle
+                                : Icons.circle_outlined,
                         color: player.isReady ? Colors.green : Colors.grey,
                       ),
-                      const SizedBox(width: 4),
-                      Text(
-                        player.isReady ? 'Ready' : 'Not ready',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: player.isReady ? Colors.green : Colors.grey,
-                        ),
+
+                    if (showScore && !isDrawing && player.isReady)
+                      _buildStatusTag(
+                        label: 'Guessed!',
+                        iconData: Icons.check_circle,
+                        color: Colors.green,
                       ),
-                    ],
-                  ),
-                if (isDrawing && showScore)
-                  Row(
-                    children: [
-                      const Icon(Icons.brush, size: 14, color: Colors.orange),
-                      const SizedBox(width: 4),
-                      Text(
-                        'Drawing',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Theme.of(context).colorScheme.secondary,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ],
-                  ),
+                  ],
+                ),
               ],
             ),
           ),
 
-          // Score
+          // Score or Ready indicator
           if (showScore)
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
-                color: Colors.grey.shade100,
+                color:
+                    isDrawing
+                        ? AppTheme.secondaryColor.withOpacity(0.1)
+                        : Colors.grey.shade100,
                 borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color:
+                      isDrawing
+                          ? AppTheme.secondaryColor.withOpacity(0.5)
+                          : Colors.grey.shade300,
+                ),
               ),
               child: Text(
                 player.score.toString(),
-                style: const TextStyle(fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: isDrawing ? AppTheme.secondaryColor : null,
+                ),
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildCompactPlayerItem(BuildContext context, User player) {
+    final isCurrentUser = player.id == currentUserId;
+    final isDrawing = player.id == drawerUserId;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
+      decoration: BoxDecoration(
+        color:
+            isCurrentUser
+                ? AppTheme.primaryColor.withOpacity(0.1)
+                : isDrawing
+                ? AppTheme.secondaryColor.withOpacity(0.05)
+                : null,
+        border: Border(
+          bottom: BorderSide(color: Colors.grey.shade200, width: 1),
+        ),
+      ),
+      child: Row(
+        children: [
+          // Small avatar with status indicator
+          Stack(
+            children: [
+              CircleAvatar(
+                radius: 14,
+                backgroundColor: _getAvatarColor(player, isDrawing),
+                child: _getAvatarContent(player, isDrawing, small: true),
+              ),
+
+              if (showScore && player.isReady && !isDrawing)
+                Positioned(
+                  right: -2,
+                  bottom: -2,
+                  child: Container(
+                    padding: const EdgeInsets.all(2),
+                    decoration: BoxDecoration(
+                      color: Colors.green,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.white, width: 1),
+                    ),
+                    child: const Icon(
+                      Icons.check,
+                      size: 8,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+
+          const SizedBox(width: 8),
+
+          // Username
+          Expanded(
+            child: Text(
+              player.username,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight:
+                    isCurrentUser || isDrawing || player.isHost
+                        ? FontWeight.bold
+                        : FontWeight.normal,
+                color: isDrawing ? AppTheme.secondaryColor : null,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+
+          // Role indicators
+          if (player.isHost)
+            const Icon(Icons.star, size: 14, color: Colors.amber),
+
+          const SizedBox(width: 4),
+
+          if (isDrawing && showScore)
+            const Icon(Icons.brush, size: 14, color: AppTheme.secondaryColor),
+
+          if (!showScore && !player.isHost) ...[
+            const SizedBox(width: 4),
+            Icon(
+              player.isReady ? Icons.check_circle : Icons.circle_outlined,
+              size: 14,
+              color: player.isReady ? Colors.green : Colors.grey,
+            ),
+          ],
+
+          // Score
+          if (showScore) ...[
+            const SizedBox(width: 8),
+            Text(
+              player.score.toString(),
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+                color: isDrawing ? AppTheme.secondaryColor : null,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatusTag({
+    required String label,
+    required IconData iconData,
+    required Color color,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(right: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: color.withOpacity(0.5)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(iconData, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Helper methods
+  Color _getAvatarColor(User player, bool isDrawing) {
+    if (isDrawing) return AppTheme.secondaryColor;
+    if (player.isHost) return Colors.amber;
+    return AppTheme.primaryColor;
+  }
+
+  Widget _getAvatarContent(User player, bool isDrawing, {bool small = false}) {
+    if (isDrawing) {
+      return Icon(Icons.brush, color: Colors.white, size: small ? 10 : 16);
+    }
+
+    if (player.isHost && !small) {
+      return Stack(
+        children: [
+          Text(
+            player.username.substring(0, 1).toUpperCase(),
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: small ? 10 : 14,
+            ),
+          ),
+          const Positioned(
+            right: -4,
+            top: -4,
+            child: Icon(Icons.star, color: Colors.white, size: 12),
+          ),
+        ],
+      );
+    }
+
+    return Text(
+      player.username.substring(0, 1).toUpperCase(),
+      style: TextStyle(
+        color: Colors.white,
+        fontWeight: FontWeight.bold,
+        fontSize: small ? 10 : 14,
       ),
     );
   }

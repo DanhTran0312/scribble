@@ -1,11 +1,15 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+
 import '../models/drawing.dart';
 import '../utils/api_constants.dart';
 import 'api_client.dart';
-import 'room_service.dart';
+import 'websocket_service.dart';
 
 class DrawingService {
   final ApiClient _apiClient = ApiClient();
-  final RoomService _roomService = RoomService();
+  WebSocketService? _webSocketService;
 
   // Update drawing via REST API
   Future<Map<String, dynamic>> updateDrawing(
@@ -13,10 +17,7 @@ class DrawingService {
     DrawingUpdate drawingUpdate,
   ) async {
     try {
-      final endpoint = ApiConstants.replaceRoomId(
-        ApiConstants.updateDrawing,
-        roomId,
-      );
+      final endpoint = ApiConstants.updateDrawing(roomId);
 
       final response = await _apiClient.post(
         endpoint,
@@ -25,6 +26,9 @@ class DrawingService {
 
       return response;
     } catch (e) {
+      if (kDebugMode) {
+        print('Error updating drawing: $e');
+      }
       rethrow;
     }
   }
@@ -42,22 +46,33 @@ class DrawingService {
 
       return response;
     } catch (e) {
+      if (kDebugMode) {
+        print('Error generating AI drawing: $e');
+      }
       rethrow;
     }
   }
 
+  // Set WebSocket service
+  void setWebSocketService(WebSocketService webSocketService) {
+    _webSocketService = webSocketService;
+  }
+
   // Send drawing update via WebSocket
   void sendDrawingUpdate(String roomId, DrawingUpdate drawingUpdate) {
-    final wsService = _roomService.webSocketService;
-
-    if (wsService != null) {
-      wsService.sendDrawingUpdate(drawingUpdate.toJson());
+    if (_webSocketService == null) {
+      if (kDebugMode) {
+        print('WebSocket service not set');
+      }
+      return;
     }
+
+    _webSocketService!.sendDrawingUpdate(drawingUpdate.toJson());
   }
 
   // Get drawing updates stream from WebSocket
-  Stream<Map<String, dynamic>>? getDrawingUpdates(String roomId) {
-    return _roomService.drawingUpdates;
+  Stream<Map<String, dynamic>>? getDrawingUpdates() {
+    return _webSocketService?.drawingUpdates;
   }
 
   // Add stroke to drawing
@@ -81,6 +96,7 @@ class DrawingService {
   }
 }
 
+// DrawingUpdate class (keep this aligned with the backend)
 class DrawingUpdate {
   final DrawStroke? addStroke;
   final DrawPoint? addPointToLastStroke;

@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:web_socket_channel/status.dart' as status;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../utils/api_constants.dart';
@@ -59,16 +58,17 @@ class WebSocketMessage {
 
 class WebSocketService {
   WebSocketChannel? _channel;
-  final String roomId;
+  String roomId;
   final ApiClient _apiClient = ApiClient();
-
   bool _isConnected = false;
+  bool _isReconnecting = false;
+  Timer? _reconnectTimer;
+  int _reconnectAttempts = 0;
+  static const int MAX_RECONNECT_ATTEMPTS = 5;
 
-  // Message controllers
+  // Stream controllers for different message types
   final StreamController<WebSocketMessage> _messageController =
       StreamController<WebSocketMessage>.broadcast();
-
-  // Typed stream controllers for different message types
   final StreamController<Map<String, dynamic>> _chatController =
       StreamController<Map<String, dynamic>>.broadcast();
   final StreamController<Map<String, dynamic>> _drawingController =
@@ -88,8 +88,13 @@ class WebSocketService {
 
   // Connect to WebSocket
   void connect() {
-    if (_isConnected) return;
+    if (_isConnected || _isReconnecting) return;
 
+    _reconnectAttempts = 0;
+    _connectInternal();
+  }
+
+  void _connectInternal() {
     // Ensure API client is initialized
     if (_apiClient.authToken == null) {
       _errorController.add({
@@ -104,27 +109,60 @@ class WebSocketService {
       // Add auth token to URL
       final uri = Uri.parse('$wsUrl?token=${_apiClient.authToken}');
 
+      if (kDebugMode) {
+        print('Connecting to WebSocket: $uri');
+      }
+
       _channel = WebSocketChannel.connect(uri);
 
       // Listen for messages
-      _channel!.stream.listen(_onMessage, onError: _onError, onDone: _onDone);
+      _channel!.stream.listen(
+        _onMessage,
+        onError: _onError,
+        onDone: _onDone,
+        cancelOnError: false,
+      );
 
       _isConnected = true;
+      _isReconnecting = false;
       _connectionStatusController.add(true);
+
+      if (kDebugMode) {
+        print('WebSocket connected');
+      }
     } catch (e) {
       _isConnected = false;
       _connectionStatusController.add(false);
       _errorController.add({'message': 'Failed to connect to WebSocket: $e'});
+
+      if (kDebugMode) {
+        print('WebSocket connection error: $e');
+      }
+
+      _attemptReconnect();
     }
   }
 
   // Disconnect WebSocket
-  void disconnect() {
-    if (!_isConnected) return;
+  void disconnect({bool isForced = false}) {
+    if (!_isConnected && !isForced) return;
 
-    _channel?.sink.close(status.goingAway);
+    _cancelReconnect();
     _isConnected = false;
+    _isReconnecting = false;
     _connectionStatusController.add(false);
+
+    try {
+      _channel?.sink.close();
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error closing WebSocket: $e');
+      }
+    }
+
+    if (kDebugMode) {
+      print('WebSocket disconnected');
+    }
   }
 
   // Send a message
@@ -135,7 +173,20 @@ class WebSocketService {
     }
 
     final message = WebSocketMessage(type: type, data: data);
-    _channel?.sink.add(jsonEncode(message.toJson()));
+    final jsonString = jsonEncode(message.toJson());
+
+    try {
+      _channel?.sink.add(jsonString);
+
+      if (kDebugMode) {
+        print('Sent WebSocket message: ${message.type}');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error sending WebSocket message: $e');
+      }
+      _errorController.add({'message': 'Failed to send message: $e'});
+    }
   }
 
   // Send a chat message
@@ -156,6 +207,10 @@ class WebSocketService {
   // Handle incoming messages
   void _onMessage(dynamic message) {
     try {
+      if (kDebugMode) {
+        print('Received WebSocket message: $message');
+      }
+
       final jsonData = jsonDecode(message as String);
       final wsMessage = WebSocketMessage.fromJson(jsonData);
 
@@ -188,28 +243,74 @@ class WebSocketService {
       if (kDebugMode) {
         print('Error parsing WebSocket message: $e');
       }
+      _errorController.add({'message': 'Failed to parse message: $e'});
     }
   }
 
   // Handle WebSocket errors
-  void _onError(error) {
-    _errorController.add({'message': 'WebSocket error: $error'});
+  void _onError(dynamic error) {
+    if (kDebugMode) {
+      print('WebSocket error: $error');
+    }
 
+    _errorController.add({'message': 'WebSocket error: $error'});
     _isConnected = false;
     _connectionStatusController.add(false);
+
+    _attemptReconnect();
   }
 
   // Handle WebSocket close
   void _onDone() {
+    if (kDebugMode) {
+      print('WebSocket connection closed');
+    }
+
     _isConnected = false;
     _connectionStatusController.add(false);
 
-    // Try to reconnect after a delay
-    Future.delayed(const Duration(seconds: 3), () {
-      if (!_isConnected) {
-        connect();
+    _attemptReconnect();
+  }
+
+  // Attempt to reconnect
+  void _attemptReconnect() {
+    // Don't attempt to reconnect if already reconnecting
+    if (_isReconnecting) return;
+
+    _isReconnecting = true;
+    _reconnectAttempts++;
+
+    if (_reconnectAttempts <= MAX_RECONNECT_ATTEMPTS) {
+      if (kDebugMode) {
+        print(
+          'Attempting to reconnect ($_reconnectAttempts/$MAX_RECONNECT_ATTEMPTS)...',
+        );
       }
-    });
+
+      // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+      final delay = Duration(seconds: 1 << (_reconnectAttempts - 1));
+
+      _reconnectTimer = Timer(delay, () {
+        _connectInternal();
+      });
+    } else {
+      if (kDebugMode) {
+        print('Max reconnect attempts reached. Giving up.');
+      }
+
+      _errorController.add({
+        'message':
+            'Failed to reconnect after $MAX_RECONNECT_ATTEMPTS attempts.',
+      });
+
+      _isReconnecting = false;
+    }
+  }
+
+  void _cancelReconnect() {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _isReconnecting = false;
   }
 
   // Stream getters
@@ -227,7 +328,8 @@ class WebSocketService {
 
   // Cleanup
   void dispose() {
-    disconnect();
+    disconnect(isForced: true);
+    _cancelReconnect();
 
     _messageController.close();
     _chatController.close();

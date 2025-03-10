@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:logging/logging.dart';
+import 'package:flutter/foundation.dart';
 
 import '../models/game_round.dart';
 import '../models/message.dart';
@@ -10,7 +10,6 @@ import 'api_client.dart';
 import 'websocket_service.dart';
 
 class RoomService {
-  final Logger _logger = Logger('RoomService');
   final ApiClient _apiClient = ApiClient();
   WebSocketService? _wsService;
 
@@ -26,6 +25,10 @@ class RoomService {
     try {
       final response = await _apiClient.get(ApiConstants.rooms);
 
+      if (kDebugMode) {
+        print('Available rooms response: $response');
+      }
+
       // Extract rooms data from response
       List<dynamic> roomsData = [];
       if (response.containsKey('items')) {
@@ -35,16 +38,17 @@ class RoomService {
       } else if (response.containsKey('rooms')) {
         roomsData = response['rooms'] as List<dynamic>;
       } else {
-        // Handle case where the response might be structured differently
-        _logger.warning('Unexpected response format: $response');
-        return [];
+        // If response has no recognized wrapper, assume it's a direct list
+        roomsData = response as List<dynamic>;
       }
 
       return roomsData
           .map((roomData) => Room.fromJson(roomData as Map<String, dynamic>))
           .toList();
     } catch (e) {
-      _logger.severe('Error getting available rooms: $e');
+      if (kDebugMode) {
+        print('Error getting available rooms: $e');
+      }
       rethrow;
     }
   }
@@ -79,7 +83,9 @@ class RoomService {
       _roomUpdatesController.add(room);
       return room;
     } catch (e) {
-      _logger.severe('Error creating room: $e');
+      if (kDebugMode) {
+        print('Error creating room: $e');
+      }
       rethrow;
     }
   }
@@ -87,10 +93,7 @@ class RoomService {
   // Join a room
   Future<Room> joinRoom(String roomId, {String? password}) async {
     try {
-      final endpoint = ApiConstants.replaceRoomId(
-        ApiConstants.joinRoom,
-        roomId,
-      );
+      final endpoint = ApiConstants.joinRoom(roomId);
 
       final data =
           password != null ? {'password': password} : <String, dynamic>{};
@@ -105,7 +108,9 @@ class RoomService {
 
       return room;
     } catch (e) {
-      _logger.severe('Error joining room: $e');
+      if (kDebugMode) {
+        print('Error joining room: $e');
+      }
       rethrow;
     }
   }
@@ -113,17 +118,16 @@ class RoomService {
   // Leave a room
   Future<void> leaveRoom(String roomId) async {
     try {
-      final endpoint = ApiConstants.replaceRoomId(
-        ApiConstants.leaveRoom,
-        roomId,
-      );
+      final endpoint = ApiConstants.leaveRoom(roomId);
 
       await _apiClient.post(endpoint);
 
       // Disconnect WebSocket
       _disconnectFromRoomWebSocket();
     } catch (e) {
-      _logger.severe('Error leaving room: $e');
+      if (kDebugMode) {
+        print('Error leaving room: $e');
+      }
       rethrow;
     }
   }
@@ -152,7 +156,7 @@ class RoomService {
       if (useAI != null) data['use_ai'] = useAI;
 
       final response = await _apiClient.patch(
-        ApiConstants.replaceRoomId('/api/rooms/{roomId}', roomId),
+        '${ApiConstants.rooms}/$roomId',
         data: data,
       );
 
@@ -160,50 +164,31 @@ class RoomService {
       _roomUpdatesController.add(room);
       return room;
     } catch (e) {
-      _logger.severe('Error updating room settings: $e');
+      if (kDebugMode) {
+        print('Error updating room settings: $e');
+      }
       rethrow;
     }
   }
 
-  // Toggle player ready status (renamed to match bloc expectation)
+  // Toggle player ready status
   Future<void> toggleReady(String roomId, bool isReady) async {
     try {
-      final endpoint = ApiConstants.replaceRoomId(
-        ApiConstants.readyStatus,
-        roomId,
-      );
+      final endpoint = ApiConstants.readyStatus(roomId);
 
       await _apiClient.post(endpoint, data: {'is_ready': isReady});
     } catch (e) {
-      _logger.severe('Error toggling ready status: $e');
+      if (kDebugMode) {
+        print('Error toggling ready status: $e');
+      }
       rethrow;
     }
   }
 
-  // Get room details
-  Future<Room> getRoomDetails(String roomId) async {
-    try {
-      final response = await _apiClient.get(
-        ApiConstants.replaceRoomId('/api/rooms/{roomId}', roomId),
-      );
-
-      final room = Room.fromJson(response);
-      _roomUpdatesController.add(room);
-      return room;
-    } catch (e) {
-      _logger.severe('Error getting room details: $e');
-      rethrow;
-    }
-  }
-
-  // The following methods are needed by the GameBloc
-  // Start a game (delegate to GameService)
+  // Start a game
   Future<Map<String, dynamic>> startGame(String roomId) async {
     try {
-      final endpoint = ApiConstants.replaceRoomId(
-        ApiConstants.startGame,
-        roomId,
-      );
+      final endpoint = ApiConstants.startGame(roomId);
 
       final response = await _apiClient.post(endpoint);
 
@@ -214,7 +199,9 @@ class RoomService {
 
       return response;
     } catch (e) {
-      _logger.severe('Error starting game: $e');
+      if (kDebugMode) {
+        print('Error starting game: $e');
+      }
       rethrow;
     }
   }
@@ -222,16 +209,15 @@ class RoomService {
   // Select a word for the round
   Future<Map<String, dynamic>> selectWord(String roomId, String word) async {
     try {
-      final endpoint = ApiConstants.replaceRoomId(
-        ApiConstants.selectWord,
-        roomId,
-      );
+      final endpoint = ApiConstants.selectWord(roomId);
 
       final response = await _apiClient.post(endpoint, data: {'word': word});
 
       return response;
     } catch (e) {
-      _logger.severe('Error selecting word: $e');
+      if (kDebugMode) {
+        print('Error selecting word: $e');
+      }
       rethrow;
     }
   }
@@ -239,16 +225,79 @@ class RoomService {
   // Submit a guess
   Future<Map<String, dynamic>> submitGuess(String roomId, String guess) async {
     try {
-      final endpoint = ApiConstants.replaceRoomId(
-        ApiConstants.submitGuess,
-        roomId,
-      );
+      final endpoint = ApiConstants.submitGuess(roomId);
 
       final response = await _apiClient.post(endpoint, data: {'guess': guess});
 
       return response;
     } catch (e) {
-      _logger.severe('Error submitting guess: $e');
+      if (kDebugMode) {
+        print('Error submitting guess: $e');
+      }
+      rethrow;
+    }
+  }
+
+  // End current round
+  Future<Map<String, dynamic>> endRound(String roomId) async {
+    try {
+      final endpoint = ApiConstants.endRound(roomId);
+
+      final response = await _apiClient.post(endpoint);
+
+      return response;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error ending round: $e');
+      }
+      rethrow;
+    }
+  }
+
+  // Start next round
+  Future<Map<String, dynamic>> startNextRound(String roomId) async {
+    try {
+      final endpoint = ApiConstants.nextRound(roomId);
+
+      final response = await _apiClient.post(endpoint);
+
+      return response;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error starting next round: $e');
+      }
+      rethrow;
+    }
+  }
+
+  // End game
+  Future<Map<String, dynamic>> endGame(String roomId) async {
+    try {
+      final endpoint = ApiConstants.endGame(roomId);
+
+      final response = await _apiClient.post(endpoint);
+
+      return response;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error ending game: $e');
+      }
+      rethrow;
+    }
+  }
+
+  // Get game state
+  Future<Map<String, dynamic>> getGameState(String roomId) async {
+    try {
+      final endpoint = ApiConstants.gameState(roomId);
+
+      final response = await _apiClient.get(endpoint);
+
+      return response;
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error getting game state: $e');
+      }
       rethrow;
     }
   }
@@ -265,7 +314,7 @@ class RoomService {
   }
 
   void _handleDrawingUpdate(Map<String, dynamic> data) {
-    // Handle drawing updates
+    // Drawing updates are handled separately by the drawing bloc
   }
 
   void _handleGameStateUpdate(Map<String, dynamic> data) {
@@ -275,7 +324,9 @@ class RoomService {
         final room = Room.fromJson(roomData);
         _roomUpdatesController.add(room);
       } catch (e) {
-        _logger.warning('Error parsing room update: $e');
+        if (kDebugMode) {
+          print('Error parsing room update: $e');
+        }
       }
     }
 
@@ -285,7 +336,9 @@ class RoomService {
         final round = GameRound.fromJson(roundData);
         _roundUpdatesController.add(round);
       } catch (e) {
-        _logger.warning('Error parsing round update: $e');
+        if (kDebugMode) {
+          print('Error parsing round update: $e');
+        }
       }
     }
   }
@@ -300,7 +353,9 @@ class RoomService {
                 .toList();
         _messageUpdatesController.add(messages);
       } catch (e) {
-        _logger.warning('Error parsing chat messages: $e');
+        if (kDebugMode) {
+          print('Error parsing chat messages: $e');
+        }
       }
     }
   }

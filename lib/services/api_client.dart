@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -57,6 +58,10 @@ class ApiClient {
   // GET request
   Future<Map<String, dynamic>> get(String endpoint) async {
     try {
+      if (kDebugMode) {
+        print('GET ${ApiConstants.baseUrl}$endpoint');
+      }
+
       final response = await _client.get(
         Uri.parse('${ApiConstants.baseUrl}$endpoint'),
         headers: _buildHeaders(),
@@ -64,6 +69,9 @@ class ApiClient {
 
       return _handleResponse(response);
     } catch (e) {
+      if (kDebugMode) {
+        print('Error in GET request: $e');
+      }
       throw ApiException('Failed to perform GET request: $e');
     }
   }
@@ -74,6 +82,11 @@ class ApiClient {
     Map<String, dynamic>? data,
   }) async {
     try {
+      if (kDebugMode) {
+        print('POST ${ApiConstants.baseUrl}$endpoint');
+        if (data != null) print('Data: $data');
+      }
+
       final response = await _client.post(
         Uri.parse('${ApiConstants.baseUrl}$endpoint'),
         headers: _buildHeaders(),
@@ -82,6 +95,9 @@ class ApiClient {
 
       return _handleResponse(response);
     } catch (e) {
+      if (kDebugMode) {
+        print('Error in POST request: $e');
+      }
       throw ApiException('Failed to perform POST request: $e');
     }
   }
@@ -92,6 +108,11 @@ class ApiClient {
     Map<String, dynamic>? data,
   }) async {
     try {
+      if (kDebugMode) {
+        print('PATCH ${ApiConstants.baseUrl}$endpoint');
+        if (data != null) print('Data: $data');
+      }
+
       final response = await _client.patch(
         Uri.parse('${ApiConstants.baseUrl}$endpoint'),
         headers: _buildHeaders(),
@@ -100,6 +121,9 @@ class ApiClient {
 
       return _handleResponse(response);
     } catch (e) {
+      if (kDebugMode) {
+        print('Error in PATCH request: $e');
+      }
       throw ApiException('Failed to perform PATCH request: $e');
     }
   }
@@ -107,6 +131,10 @@ class ApiClient {
   // DELETE request
   Future<Map<String, dynamic>> delete(String endpoint) async {
     try {
+      if (kDebugMode) {
+        print('DELETE ${ApiConstants.baseUrl}$endpoint');
+      }
+
       final response = await _client.delete(
         Uri.parse('${ApiConstants.baseUrl}$endpoint'),
         headers: _buildHeaders(),
@@ -114,6 +142,9 @@ class ApiClient {
 
       return _handleResponse(response);
     } catch (e) {
+      if (kDebugMode) {
+        print('Error in DELETE request: $e');
+      }
       throw ApiException('Failed to perform DELETE request: $e');
     }
   }
@@ -134,6 +165,13 @@ class ApiClient {
 
   // Handle HTTP response
   Map<String, dynamic> _handleResponse(http.Response response) {
+    if (kDebugMode) {
+      print('Response status: ${response.statusCode}');
+      print(
+        'Response body: ${response.body.substring(0, min(500, response.body.length))}...',
+      );
+    }
+
     if (response.statusCode >= 200 && response.statusCode < 300) {
       // Success
       if (response.body.isEmpty) {
@@ -161,4 +199,6 @@ class ApiClient {
       throw ApiException(message, statusCode: response.statusCode);
     }
   }
+
+  int min(int a, int b) => a < b ? a : b;
 }

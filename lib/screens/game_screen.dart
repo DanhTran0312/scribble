@@ -3,19 +3,22 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
-import 'package:scribble/bloc/auth_bloc.dart';
-import 'package:scribble/bloc/auth_state.dart';
-import 'package:scribble/bloc/game_bloc.dart';
-import 'package:scribble/bloc/game_event.dart';
-import 'package:scribble/bloc/game_state.dart';
-import 'package:scribble/widgets/chat_box.dart';
-import 'package:scribble/widgets/player_list.dart';
-import 'package:scribble/widgets/round_info.dart';
-import 'package:scribble/widgets/timer_widget.dart';
-import 'package:scribble/widgets/word_selection.dart';
 
+import '../bloc/auth_bloc.dart';
+import '../bloc/auth_state.dart';
+import '../bloc/game_bloc.dart';
+import '../bloc/game_event.dart';
+import '../bloc/game_state.dart';
 import '../models/game_round.dart';
+import '../models/user.dart';
+import '../theme/app_theme.dart';
+import '../widgets/ai_drawing_controls.dart';
+import '../widgets/chat_box.dart';
 import '../widgets/drawing_canvas.dart';
+import '../widgets/player_list.dart';
+import '../widgets/round_info.dart';
+import '../widgets/timer_widget.dart';
+import '../widgets/word_selection.dart';
 
 class GameScreen extends StatefulWidget {
   final String roomId;
@@ -26,12 +29,31 @@ class GameScreen extends StatefulWidget {
   State<GameScreen> createState() => _GameScreenState();
 }
 
-class _GameScreenState extends State<GameScreen> {
+class _GameScreenState extends State<GameScreen>
+    with SingleTickerProviderStateMixin {
   Timer? _gameTimer;
+  late AnimationController _animationController;
+  late Animation<double> _slideAnimation;
+
+  // UI state
+  bool _showPlayerList = true;
+  bool _showChat = true;
 
   @override
   void initState() {
     super.initState();
+
+    // Setup animations
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+
+    _slideAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.easeInOut),
+    );
+
+    _animationController.forward();
 
     // Join the game
     context.read<GameBloc>().add(GameJoined(widget.roomId));
@@ -45,6 +67,9 @@ class _GameScreenState extends State<GameScreen> {
     // Cancel timer
     _gameTimer?.cancel();
 
+    // Dispose animation
+    _animationController.dispose();
+
     super.dispose();
   }
 
@@ -52,39 +77,34 @@ class _GameScreenState extends State<GameScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Doodle Guess'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            showDialog(
-              context: context,
-              builder:
-                  (context) => AlertDialog(
-                    title: const Text('Leave Game?'),
-                    content: const Text(
-                      'Are you sure you want to leave the game? This action cannot be undone.',
-                    ),
-                    actions: [
-                      TextButton(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                        },
-                        child: const Text('Cancel'),
-                      ),
-                      ElevatedButton(
-                        onPressed: () {
-                          Navigator.of(context).pop();
-                          context.go('/');
-                        },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red,
-                        ),
-                        child: const Text('Leave Game'),
-                      ),
-                    ],
-                  ),
-            );
+        title: BlocBuilder<GameBloc, GameState>(
+          builder: (context, state) {
+            if (state is GameInLobby) {
+              return Text('Lobby: ${state.room.name}');
+            } else if (state is GamePlaying) {
+              return Text('Playing: ${state.room.name}');
+            }
+            return const Text('Doodle Guess');
           },
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.help_outline),
+            onPressed: () {
+              _showGameHelp();
+            },
+            tooltip: 'Game Rules',
+          ),
+        ],
+        leading: Builder(
+          builder:
+              (context) => IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () {
+                  _showLeaveGameDialog();
+                },
+                tooltip: 'Leave Game',
+              ),
         ),
       ),
       body: BlocConsumer<GameBloc, GameState>(
@@ -96,50 +116,27 @@ class _GameScreenState extends State<GameScreen> {
         },
         builder: (context, state) {
           if (state is GameInitial || state is GameLoading) {
-            return const Center(child: CircularProgressIndicator());
+            return _buildLoadingState();
           }
 
           if (state is GameFailure) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.error_outline, size: 64, color: Colors.red),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Game Error: ${state.error}',
-                    style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 32),
-                  ElevatedButton(
-                    onPressed: () {
-                      context.go('/');
-                    },
-                    child: const Text('Return to Home'),
-                  ),
-                ],
-              ),
-            );
+            return _buildErrorState(state);
           }
 
           if (state is GameInLobby) {
-            return _buildLobbyScreen(context, state);
+            return _buildLobbyState(state);
           }
 
           if (state is GamePlaying) {
-            return _buildGamePlayingScreen(context, state);
+            return _buildGamePlayingState(state);
           }
 
           if (state is GameRoundFinished) {
-            return _buildRoundFinishedScreen(context, state);
+            return _buildRoundFinishedState(state);
           }
 
           if (state is GameFinished) {
-            return _buildGameFinishedScreen(context, state);
+            return _buildGameFinishedState(state);
           }
 
           return const Center(child: Text('Unknown game state'));
@@ -148,172 +145,443 @@ class _GameScreenState extends State<GameScreen> {
     );
   }
 
-  Widget _buildLobbyScreen(BuildContext context, GameInLobby state) {
+  Widget _buildLoadingState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 80,
+            height: 80,
+            child: CircularProgressIndicator(
+              strokeWidth: 3,
+              valueColor: AlwaysStoppedAnimation<Color>(AppTheme.primaryColor),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Joining Game...',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.primaryColor,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Connecting to room: ${widget.roomId}',
+            style: TextStyle(color: Colors.grey.shade600),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildErrorState(GameFailure state) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.error_outline,
+              size: 80,
+              color: AppTheme.errorColor.withOpacity(0.7),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              'Game Error',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.errorColor,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              state.error,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 32),
+            ElevatedButton.icon(
+              onPressed: () {
+                context.go('/');
+              },
+              icon: const Icon(Icons.home),
+              label: const Text('Return to Home'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primaryColor,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 24,
+                  vertical: 12,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLobbyState(GameInLobby state) {
     final authState = context.read<AuthBloc>().state;
     final currentUser = authState is AuthAuthenticated ? authState.user : null;
     final isHost = currentUser?.id == state.room.host?.id;
+    final readyPlayers =
+        state.room.players.where((p) => p.isReady || p.isHost).length;
+    final totalPlayers = state.room.players.length;
+    final canStart = readyPlayers == totalPlayers && totalPlayers >= 2;
 
-    return Column(
-      children: [
-        // Room info
-        Container(
-          padding: const EdgeInsets.all(16.0),
-          color: Theme.of(context).colorScheme.primaryContainer,
-          child: Row(
-            children: [
-              Expanded(
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [AppTheme.primaryColor.withOpacity(0.05), Colors.white],
+        ),
+      ),
+      child: Column(
+        children: [
+          // Room info card
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Card(
+              elevation: 4,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
                 child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      'Room: ${state.room.name}',
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+                    // Room info header
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.meeting_room,
+                          size: 24,
+                          color: AppTheme.primaryColor,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                state.room.name,
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              Text(
+                                'Host: ${state.room.host?.username ?? 'Unknown'}',
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  color: Colors.grey.shade600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        // Room status badge
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.green.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: Colors.green.withOpacity(0.5),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.hourglass_empty,
+                                size: 16,
+                                color: Colors.green,
+                              ),
+                              const SizedBox(width: 4),
+                              const Text(
+                                'Waiting',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.green,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+
+                    const SizedBox(height: 16),
+                    const Divider(),
+                    const SizedBox(height: 16),
+
+                    // Game settings
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      children: [
+                        _buildSettingColumn(
+                          icon: Icons.people,
+                          label: 'Players',
+                          value:
+                              '${state.room.players.length}/${state.room.maxPlayers}',
+                        ),
+                        _buildSettingColumn(
+                          icon: Icons.repeat,
+                          label: 'Rounds',
+                          value: state.room.maxRounds.toString(),
+                        ),
+                        _buildSettingColumn(
+                          icon: Icons.timer,
+                          label: 'Time per Round',
+                          value: '${state.room.drawingTimeSeconds}s',
+                        ),
+                        if (state.room.useAI)
+                          _buildSettingColumn(
+                            icon: Icons.auto_fix_high,
+                            label: 'AI Drawing',
+                            value: 'Enabled',
+                            highlight: true,
+                          ),
+                        if (state.room.isPrivate)
+                          _buildSettingColumn(
+                            icon: Icons.lock,
+                            label: 'Private Room',
+                            value: 'Yes',
+                          ),
+                      ],
+                    ),
+
+                    // Room code for sharing
+                    if (isHost) ...[
+                      const SizedBox(height: 16),
+                      const Divider(),
+                      const SizedBox(height: 16),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Room Code:',
+                                  style: TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                Row(
+                                  children: [
+                                    Text(
+                                      widget.roomId,
+                                      style: const TextStyle(
+                                        fontSize: 16,
+                                        fontFamily: 'monospace',
+                                        letterSpacing: 1,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(
+                                        Icons.content_copy,
+                                        size: 16,
+                                      ),
+                                      onPressed: () {
+                                        // Copy to clipboard functionality
+                                        ScaffoldMessenger.of(
+                                          context,
+                                        ).showSnackBar(
+                                          const SnackBar(
+                                            content: Text(
+                                              'Room code copied to clipboard!',
+                                            ),
+                                            duration: Duration(seconds: 1),
+                                          ),
+                                        );
+                                      },
+                                      tooltip: 'Copy Room Code',
+                                    ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              // Share functionality
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Share feature coming soon!'),
+                                ),
+                              );
+                            },
+                            icon: const Icon(Icons.share),
+                            label: const Text('Share'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: AppTheme.primaryColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+
+          // Player list
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16.0, 0.0, 16.0, 16.0),
+              child: Card(
+                elevation: 4,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.people),
+                          const SizedBox(width: 8),
+                          const Text(
+                            'Players',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          const Spacer(),
+                          Text(
+                            '$readyPlayers/$totalPlayers Ready',
+                            style: TextStyle(
+                              fontWeight: FontWeight.w500,
+                              color: canStart ? Colors.green : Colors.orange,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Host: ${state.room.host?.username ?? 'Unknown'}',
-                      style: const TextStyle(fontSize: 14),
+                    const Divider(height: 1),
+                    Expanded(
+                      child: PlayerListWidget(
+                        players: state.room.players,
+                        currentUserId: currentUser?.id ?? '',
+                      ),
                     ),
                   ],
                 ),
               ),
-              // Copy code button
-              OutlinedButton.icon(
-                onPressed: () {
-                  // Copy room code to clipboard
-                  // In a real app, this would use clipboard functionality
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                      content: Text('Room code copied to clipboard'),
-                    ),
-                  );
-                },
-                icon: const Icon(Icons.copy),
-                label: Text(
-                  state.room.id.substring(0, 6).toUpperCase(),
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.5,
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
-        ),
 
-        // Room settings
-        Container(
-          padding: const EdgeInsets.all(16.0),
-          color: Theme.of(
-            context,
-          ).colorScheme.primaryContainer.withOpacity(0.5),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _buildSettingItem(
-                icon: Icons.people,
-                label: 'Players',
-                value: '${state.room.players.length}/${state.room.maxPlayers}',
-              ),
-              _buildSettingItem(
-                icon: Icons.repeat,
-                label: 'Rounds',
-                value: state.room.maxRounds.toString(),
-              ),
-              _buildSettingItem(
-                icon: Icons.timer,
-                label: 'Time',
-                value: '${state.room.drawingTimeSeconds}s',
-              ),
-              if (state.room.useAI)
-                _buildSettingItem(
-                  icon: Icons.auto_fix_high,
-                  label: 'AI Mode',
-                  value: 'On',
-                ),
-            ],
-          ),
-        ),
-
-        // Player list
-        Expanded(
-          child: PlayerListWidget(
-            players: state.room.players,
-            currentUserId: currentUser?.id ?? '',
-          ),
-        ),
-
-        // Ready button or start game button
-        Padding(
-          padding: const EdgeInsets.all(16.0),
-          child:
-              isHost
-                  ? SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton(
-                      onPressed: _canStartGame(state) ? _startGame : null,
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 16.0),
-                      ),
-                      child: const Text(
-                        'Start Game',
-                        style: TextStyle(fontSize: 18),
-                      ),
-                    ),
-                  )
-                  : Row(
-                    children: [
-                      const Text(
-                        'Ready to play?',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const Spacer(),
-                      ElevatedButton(
-                        onPressed: () {
-                          // Toggle ready status
-                          final isCurrentlyReady =
-                              state.room.players
-                                  .firstWhere((p) => p.id == currentUser?.id)
-                                  .isReady;
-
-                          context.read<GameBloc>().add(
-                            GamePlayerReady(
-                              playerId: currentUser?.id ?? '',
-                              isReady: !isCurrentlyReady,
-                            ),
-                          );
-                        },
+          // Ready button or start game button
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16.0, 0.0, 16.0, 16.0),
+            child:
+                isHost
+                    ? SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton(
+                        onPressed: canStart ? _startGame : null,
                         style: ElevatedButton.styleFrom(
-                          backgroundColor:
-                              _isPlayerReady(state, currentUser?.id ?? '')
-                                  ? Colors.green
-                                  : Theme.of(context).colorScheme.primary,
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 24.0,
-                            vertical: 16.0,
+                          backgroundColor: AppTheme.secondaryColor,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 16.0),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(16),
+                          ),
+                          disabledBackgroundColor: Colors.grey.shade300,
+                        ),
+                        child: const Text(
+                          'Start Game',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
-                        child: Text(
-                          _isPlayerReady(state, currentUser?.id ?? '')
-                              ? 'Ready!'
-                              : 'Not Ready',
-                          style: const TextStyle(fontSize: 16),
+                      ),
+                    )
+                    : Card(
+                      elevation: 4,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.info_outline),
+                            const SizedBox(width: 16),
+                            const Expanded(
+                              child: Text(
+                                'Waiting for the host to start the game...',
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            ElevatedButton(
+                              onPressed: () {
+                                // Toggle ready status
+                                final isCurrentlyReady =
+                                    state.room.players
+                                        .firstWhere(
+                                          (p) => p.id == currentUser?.id,
+                                        )
+                                        .isReady;
+
+                                context.read<GameBloc>().add(
+                                  GamePlayerReady(
+                                    playerId: currentUser?.id ?? '',
+                                    isReady: !isCurrentlyReady,
+                                  ),
+                                );
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor:
+                                    _getReadyStatus(
+                                          state,
+                                          currentUser?.id ?? '',
+                                        )
+                                        ? Colors.green
+                                        : AppTheme.primaryColor,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 16.0,
+                                  vertical: 12.0,
+                                ),
+                              ),
+                              child: Text(
+                                _getReadyStatus(state, currentUser?.id ?? '')
+                                    ? 'Ready!'
+                                    : 'Not Ready',
+                                style: const TextStyle(fontSize: 16),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
-                    ],
-                  ),
-        ),
-      ],
+                    ),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _buildGamePlayingScreen(BuildContext context, GamePlaying state) {
+  Widget _buildGamePlayingState(GamePlaying state) {
     final authState = context.read<AuthBloc>().state;
     final currentUser = authState is AuthAuthenticated ? authState.user : null;
 
@@ -327,390 +595,1014 @@ class _GameScreenState extends State<GameScreen> {
       );
     }
 
-    return Column(
-      children: [
-        // Game info bar
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-          color: Theme.of(context).colorScheme.primaryContainer,
-          child: Row(
-            children: [
-              // Round info
-              RoundInfoWidget(
-                currentRound: state.round.roundNumber,
-                totalRounds: state.room.maxRounds,
-                drawerName: state.round.drawerUser.username,
-              ),
-
-              const Spacer(),
-
-              // Timer
-              TimerWidget(
-                remainingSeconds: state.remainingTimeInSeconds,
-                totalSeconds: state.room.drawingTimeSeconds,
-              ),
-            ],
-          ),
-        ),
-
-        // Word hint (if not the drawer)
-        if (!state.isDrawingTurn && state.round.word.isNotEmpty)
-          Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16.0,
-              vertical: 8.0,
-            ),
-            color: Theme.of(
-              context,
-            ).colorScheme.primaryContainer.withOpacity(0.5),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text(
-                  'Word: ',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                Text(
-                  _getWordHint(state.round.word),
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 2.0,
-                  ),
-                ),
-                Text(
-                  ' (${state.round.word.length} letters)',
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontStyle: FontStyle.italic,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-        // Current word (if drawer)
-        if (state.isDrawingTurn && state.round.word.isNotEmpty)
-          Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 16.0,
-              vertical: 8.0,
-            ),
-            color: Theme.of(
-              context,
-            ).colorScheme.primaryContainer.withOpacity(0.5),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                const Text(
-                  'Your word: ',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                Text(
-                  state.round.word,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.0,
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-        // Main content - Drawing canvas and chat
-        Expanded(
-          child: Row(
-            children: [
-              // Drawing canvas
-              Expanded(
-                flex: 2,
-                child: Center(
-                  child: DrawingCanvas(
-                    isDrawingTurn: state.isDrawingTurn,
-                    isAiMode: state.room.useAI,
-                    canvasWidth: MediaQuery.of(context).size.width * 0.6,
-                    canvasHeight: MediaQuery.of(context).size.height * 0.5,
-                  ),
-                ),
-              ),
-
-              // Chat and player list
-              Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    border: Border(
-                      left: BorderSide(color: Colors.grey.shade300, width: 1),
+    // Check if user wants to use AI drawing tool
+    if (state.isDrawingTurn &&
+        state.round.status == RoundStatus.drawing &&
+        state.room.useAI) {
+      // Show AI drawing button
+      final aiDrawButton = Positioned(
+        top: 16,
+        right: 16,
+        child: FloatingActionButton(
+          heroTag: 'ai_draw_button',
+          onPressed: () {
+            showDialog(
+              context: context,
+              builder:
+                  (context) => Dialog(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
                     ),
+                    child: AiDrawingControls(currentWord: state.round.word),
                   ),
-                  child: Column(
+            );
+          },
+          backgroundColor: AppTheme.accentColor,
+          foregroundColor: Colors.black,
+          elevation: 4,
+          tooltip: 'Use AI Drawing',
+          child: const Icon(Icons.auto_fix_high),
+        ),
+      );
+    }
+
+    return FadeTransition(
+      opacity: _slideAnimation,
+      child: Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              // Game info bar
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16.0,
+                  vertical: 12.0,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  boxShadow: AppTheme.smallShadow,
+                ),
+                child: Row(
+                  children: [
+                    // Round info
+                    Expanded(
+                      child: RoundInfoWidget(
+                        currentRound: state.round.roundNumber,
+                        totalRounds: state.room.maxRounds,
+                        drawerName: state.round.drawerUser.username,
+                      ),
+                    ),
+
+                    // Timer
+                    TimerWidget(
+                      remainingSeconds: state.remainingTimeInSeconds,
+                      totalSeconds: state.room.drawingTimeSeconds,
+                    ),
+                  ],
+                ),
+              ),
+
+              // Word hint (if not the drawer)
+              if (!state.isDrawingTurn && state.round.word.isNotEmpty)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 12.0,
+                  ),
+                  color: AppTheme.primaryColor.withOpacity(0.1),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // Player list
-                      Expanded(
-                        flex: 1,
-                        child: PlayerListWidget(
-                          players: state.room.players,
-                          currentUserId: currentUser?.id ?? '',
-                          showScore: true,
-                          drawerUserId: state.round.drawerUser.id,
+                      const Icon(
+                        Icons.lightbulb_outline,
+                        color: AppTheme.primaryColor,
+                      ),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Word: ',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-
-                      // Chat
-                      Expanded(
-                        flex: 2,
-                        child: ChatBoxWidget(
-                          messages: state.round.messages,
-                          currentUserId: currentUser?.id ?? '',
-                          isDrawingTurn: state.isDrawingTurn,
-                          onSendMessage: (message) {
-                            if (!state.isDrawingTurn) {
-                              context.read<GameBloc>().add(
-                                GameGuessSubmitted(message),
-                              );
-                            }
-                          },
+                      Text(
+                        _getWordHint(state.round.word),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 2.0,
+                          fontFamily: 'monospace',
+                        ),
+                      ),
+                      Text(
+                        ' (${state.round.word.length} letters)',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontStyle: FontStyle.italic,
+                          color: Colors.grey.shade700,
                         ),
                       ),
                     ],
                   ),
                 ),
+
+              // Current word (if drawer)
+              if (state.isDrawingTurn && state.round.word.isNotEmpty)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16.0,
+                    vertical: 12.0,
+                  ),
+                  color: AppTheme.secondaryColor.withOpacity(0.1),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.brush, color: AppTheme.secondaryColor),
+                      const SizedBox(width: 8),
+                      const Text(
+                        'Draw: ',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        state.round.word,
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.secondaryColor,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+              // Main content - Drawing canvas and sidebar
+              Expanded(
+                child: Row(
+                  children: [
+                    // Drawing canvas area
+                    Expanded(
+                      flex: 3,
+                      child: Stack(
+                        children: [
+                          Center(
+                            child: DrawingCanvas(
+                              isDrawingTurn: state.isDrawingTurn,
+                              isAiMode: state.room.useAI,
+                              canvasWidth:
+                                  MediaQuery.of(context).size.width * 0.65,
+                              canvasHeight:
+                                  MediaQuery.of(context).size.height * 0.5,
+                            ),
+                          ),
+
+                          // Floating AI button (if applicable)
+                          if (state.isDrawingTurn &&
+                              state.round.status == RoundStatus.drawing &&
+                              state.room.useAI)
+                            Positioned(
+                              top: 16,
+                              right: 16,
+                              child: FloatingActionButton(
+                                heroTag: 'ai_draw_button',
+                                onPressed: () {
+                                  showDialog(
+                                    context: context,
+                                    builder:
+                                        (context) => Dialog(
+                                          shape: RoundedRectangleBorder(
+                                            borderRadius: BorderRadius.circular(
+                                              16,
+                                            ),
+                                          ),
+                                          child: AiDrawingControls(
+                                            currentWord: state.round.word,
+                                          ),
+                                        ),
+                                  );
+                                },
+                                backgroundColor: AppTheme.accentColor,
+                                foregroundColor: Colors.black,
+                                elevation: 4,
+                                tooltip: 'Use AI Drawing',
+                                child: const Icon(Icons.auto_fix_high),
+                              ),
+                            ),
+
+                          // Toggle sidebar buttons
+                          Positioned(
+                            bottom: 16,
+                            right: 16,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                FloatingActionButton.small(
+                                  heroTag: 'toggle_players',
+                                  onPressed: () {
+                                    setState(() {
+                                      _showPlayerList = !_showPlayerList;
+                                    });
+                                  },
+                                  backgroundColor:
+                                      _showPlayerList
+                                          ? AppTheme.primaryColor
+                                          : Colors.grey.shade300,
+                                  foregroundColor:
+                                      _showPlayerList
+                                          ? Colors.white
+                                          : Colors.grey.shade700,
+                                  tooltip:
+                                      _showPlayerList
+                                          ? 'Hide Players'
+                                          : 'Show Players',
+                                  child: const Icon(Icons.people),
+                                ),
+                                const SizedBox(height: 8),
+                                FloatingActionButton.small(
+                                  heroTag: 'toggle_chat',
+                                  onPressed: () {
+                                    setState(() {
+                                      _showChat = !_showChat;
+                                    });
+                                  },
+                                  backgroundColor:
+                                      _showChat
+                                          ? AppTheme.primaryColor
+                                          : Colors.grey.shade300,
+                                  foregroundColor:
+                                      _showChat
+                                          ? Colors.white
+                                          : Colors.grey.shade700,
+                                  tooltip:
+                                      _showChat ? 'Hide Chat' : 'Show Chat',
+                                  child: const Icon(Icons.chat),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    // Sidebar with player list and chat
+                    if (_showPlayerList || _showChat)
+                      SizedBox(
+                        width: MediaQuery.of(context).size.width * 0.3,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            border: Border(
+                              left: BorderSide(
+                                color: Colors.grey.shade300,
+                                width: 1,
+                              ),
+                            ),
+                          ),
+                          child: Column(
+                            children: [
+                              // Player list
+                              if (_showPlayerList)
+                                Expanded(
+                                  flex: 1,
+                                  child: PlayerListWidget(
+                                    players: state.room.players,
+                                    currentUserId: currentUser?.id ?? '',
+                                    showScore: true,
+                                    drawerUserId: state.round.drawerUser.id,
+                                  ),
+                                ),
+
+                              // Divider between player list and chat
+                              if (_showPlayerList && _showChat)
+                                Divider(
+                                  height: 1,
+                                  thickness: 1,
+                                  color: Colors.grey.shade300,
+                                ),
+
+                              // Chat
+                              if (_showChat)
+                                Expanded(
+                                  flex: 2,
+                                  child: ChatBoxWidget(
+                                    messages: state.round.messages,
+                                    currentUserId: currentUser?.id ?? '',
+                                    isDrawingTurn: state.isDrawingTurn,
+                                    onSendMessage: (message) {
+                                      if (!state.isDrawingTurn) {
+                                        context.read<GameBloc>().add(
+                                          GameGuessSubmitted(message),
+                                        );
+                                      }
+                                    },
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
               ),
             ],
           ),
         ),
-      ],
+      ),
     );
   }
 
-  Widget _buildRoundFinishedScreen(
-    BuildContext context,
-    GameRoundFinished state,
-  ) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.check_circle_outline, size: 64, color: Colors.green),
-          const SizedBox(height: 16),
-          Text(
-            'Round ${state.round.roundNumber} Finished!',
-            style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'The word was: ${state.round.word}',
-            style: const TextStyle(fontSize: 18),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 32),
-
-          // Round scores
-          const Text(
-            'Scores:',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 16),
-
-          // Score list
-          SizedBox(
-            width: 300,
-            height: 200,
-            child: ListView.builder(
-              itemCount: state.room.players.length,
-              itemBuilder: (context, index) {
-                final player = state.room.players[index];
-                final roundScore = state.playerScores[player.id] ?? 0;
-
-                return ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    child: Text(
-                      player.username.substring(0, 1).toUpperCase(),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
-                  title: Text(player.username),
-                  trailing: Row(
+  Widget _buildRoundFinishedState(GameRoundFinished state) {
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [AppTheme.primaryColor.withOpacity(0.1), Colors.white],
+        ),
+      ),
+      child: SafeArea(
+        child: Center(
+          child: FadeTransition(
+            opacity: _slideAnimation,
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Card(
+                elevation: 8,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      if (roundScore > 0)
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 4,
+                      // Trophy icon
+                      Container(
+                        padding: const EdgeInsets.all(24),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.withOpacity(0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.emoji_events,
+                          size: 64,
+                          color: Colors.amber,
+                        ),
+                      ),
+
+                      const SizedBox(height: 24),
+
+                      // Round finished text
+                      Text(
+                        'Round ${state.round.roundNumber} Finished!',
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+
+                      const SizedBox(height: 8),
+
+                      // Word reveal
+                      RichText(
+                        text: TextSpan(
+                          children: [
+                            TextSpan(
+                              text: 'The word was: ',
+                              style: TextStyle(
+                                fontSize: 18,
+                                color: Colors.grey.shade700,
+                              ),
+                            ),
+                            TextSpan(
+                              text: state.round.word,
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                                color: AppTheme.secondaryColor,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 32),
+
+                      // Scores section
+                      const Text(
+                        'Scores This Round',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      // Score list
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 220),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(16),
+                          child: ListView.builder(
+                            shrinkWrap: true,
+                            padding: EdgeInsets.zero,
+                            itemCount: state.room.players.length,
+                            itemBuilder: (context, index) {
+                              final player = state.room.players[index];
+                              final roundScore =
+                                  state.playerScores[player.id] ?? 0;
+
+                              return Container(
+                                decoration: BoxDecoration(
+                                  border: Border(
+                                    bottom: BorderSide(
+                                      color: Colors.grey.shade200,
+                                      width:
+                                          index < state.room.players.length - 1
+                                              ? 1
+                                              : 0,
+                                    ),
+                                  ),
+                                ),
+                                child: ListTile(
+                                  leading: CircleAvatar(
+                                    backgroundColor:
+                                        player.id == state.round.drawerUser.id
+                                            ? AppTheme.secondaryColor
+                                            : AppTheme.primaryColor,
+                                    child:
+                                        player.id == state.round.drawerUser.id
+                                            ? const Icon(
+                                              Icons.brush,
+                                              color: Colors.white,
+                                              size: 18,
+                                            )
+                                            : Text(
+                                              player.username
+                                                  .substring(0, 1)
+                                                  .toUpperCase(),
+                                              style: const TextStyle(
+                                                color: Colors.white,
+                                                fontWeight: FontWeight.bold,
+                                              ),
+                                            ),
+                                  ),
+                                  title: Text(
+                                    player.username,
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color:
+                                          player.id == state.round.drawerUser.id
+                                              ? AppTheme.secondaryColor
+                                              : null,
+                                    ),
+                                  ),
+                                  subtitle:
+                                      player.id == state.round.drawerUser.id
+                                          ? const Text('Artist')
+                                          : null,
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      if (roundScore > 0)
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8,
+                                            vertical: 4,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: Colors.green.withOpacity(
+                                              0.1,
+                                            ),
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
+                                            border: Border.all(
+                                              color: Colors.green.withOpacity(
+                                                0.5,
+                                              ),
+                                            ),
+                                          ),
+                                          child: Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              const Icon(
+                                                Icons.add,
+                                                size: 14,
+                                                color: Colors.green,
+                                              ),
+                                              Text(
+                                                roundScore.toString(),
+                                                style: const TextStyle(
+                                                  fontWeight: FontWeight.bold,
+                                                  color: Colors.green,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      const SizedBox(width: 12),
+                                      Text(
+                                        player.score.toString(),
+                                        style: const TextStyle(
+                                          fontSize: 18,
+                                          fontWeight: FontWeight.bold,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              );
+                            },
                           ),
-                          decoration: BoxDecoration(
-                            color: Colors.green,
-                            borderRadius: BorderRadius.circular(16),
+                        ),
+                      ),
+
+                      const SizedBox(height: 24),
+
+                      // Next round indicator
+                      if (state.round.roundNumber < state.room.maxRounds)
+                        const Column(
+                          children: [
+                            Text(
+                              'Next round starting soon...',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontStyle: FontStyle.italic,
+                                color: Colors.grey,
+                              ),
+                            ),
+                            SizedBox(height: 16),
+                            SizedBox(
+                              width: 40,
+                              height: 40,
+                              child: CircularProgressIndicator(strokeWidth: 3),
+                            ),
+                          ],
+                        )
+                      else
+                        const Column(
+                          children: [
+                            Text(
+                              'Game ending soon...',
+                              style: TextStyle(
+                                fontSize: 16,
+                                fontStyle: FontStyle.italic,
+                                color: Colors.grey,
+                              ),
+                            ),
+                            SizedBox(height: 16),
+                            SizedBox(
+                              width: 40,
+                              height: 40,
+                              child: CircularProgressIndicator(strokeWidth: 3),
+                            ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGameFinishedState(GameFinished state) {
+    // Find top 3 players
+    final sortedPlayers = List<User>.from(state.room.players)
+      ..sort((a, b) => b.score.compareTo(a.score));
+
+    final winner = sortedPlayers.first;
+    final hasSecond = sortedPlayers.length > 1;
+    final hasThird = sortedPlayers.length > 2;
+
+    final second = hasSecond ? sortedPlayers[1] : null;
+    final third = hasThird ? sortedPlayers[2] : null;
+
+    return Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [AppTheme.primaryColor.withOpacity(0.2), Colors.white],
+        ),
+      ),
+      child: SafeArea(
+        child: Center(
+          child: FadeTransition(
+            opacity: _slideAnimation,
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Card(
+                elevation: 8,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(24.0),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Game finished banner
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 12,
+                          horizontal: 24,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.amber.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: Colors.amber.withOpacity(0.5),
                           ),
-                          child: Text(
-                            '+$roundScore',
-                            style: const TextStyle(
-                              color: Colors.white,
+                        ),
+                        child: Column(
+                          children: [
+                            const Text(
+                              'Game Finished!',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 28,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.amber,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '${state.room.name} • ${state.room.maxRounds} Rounds',
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Colors.grey.shade700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 32),
+
+                      // Winner announcement
+                      Text(
+                        '🏆 ${winner.username} wins! 🏆',
+                        style: const TextStyle(
+                          fontSize: 24,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.amber,
+                        ),
+                      ),
+
+                      Text(
+                        'with ${winner.score} points',
+                        style: TextStyle(
+                          fontSize: 18,
+                          color: Colors.grey.shade700,
+                        ),
+                      ),
+
+                      const SizedBox(height: 32),
+
+                      // Podium visualization
+                      SizedBox(
+                        height: 120,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            if (hasSecond)
+                              _buildPodiumPosition(
+                                context,
+                                player: second!,
+                                position: 2,
+                                height: 80,
+                              ),
+
+                            _buildPodiumPosition(
+                              context,
+                              player: winner,
+                              position: 1,
+                              height: 120,
+                            ),
+
+                            if (hasThird)
+                              _buildPodiumPosition(
+                                context,
+                                player: third!,
+                                position: 3,
+                                height: 60,
+                              ),
+                          ],
+                        ),
+                      ),
+
+                      const SizedBox(height: 32),
+
+                      // Final scores header
+                      const Row(
+                        children: [
+                          Icon(Icons.leaderboard),
+                          SizedBox(width: 8),
+                          Text(
+                            'Final Scores',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 16),
+
+                      // Score list
+                      Container(
+                        constraints: const BoxConstraints(maxHeight: 180),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade50,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.grey.shade200),
+                        ),
+                        child: ListView.builder(
+                          shrinkWrap: true,
+                          padding: EdgeInsets.zero,
+                          itemCount: sortedPlayers.length,
+                          itemBuilder: (context, index) {
+                            final player = sortedPlayers[index];
+                            final position = index + 1;
+
+                            Color positionColor;
+                            if (position == 1)
+                              positionColor = Colors.amber;
+                            else if (position == 2)
+                              positionColor = Colors.grey.shade400;
+                            else if (position == 3)
+                              positionColor = Colors.brown.shade300;
+                            else
+                              positionColor = Colors.grey.shade700;
+
+                            return Container(
+                              decoration: BoxDecoration(
+                                color:
+                                    position == 1
+                                        ? Colors.amber.withOpacity(0.1)
+                                        : null,
+                                border: Border(
+                                  bottom: BorderSide(
+                                    color: Colors.grey.shade200,
+                                    width:
+                                        index < sortedPlayers.length - 1
+                                            ? 1
+                                            : 0,
+                                  ),
+                                ),
+                              ),
+                              child: ListTile(
+                                leading: Container(
+                                  width: 32,
+                                  height: 32,
+                                  decoration: BoxDecoration(
+                                    color:
+                                        position <= 3
+                                            ? positionColor.withOpacity(0.1)
+                                            : Colors.grey.shade100,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(color: positionColor),
+                                  ),
+                                  child: Center(
+                                    child: Text(
+                                      position.toString(),
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.bold,
+                                        color: positionColor,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                title: Text(
+                                  player.username,
+                                  style: TextStyle(
+                                    fontWeight:
+                                        position <= 3 ? FontWeight.bold : null,
+                                  ),
+                                ),
+                                trailing: Text(
+                                  player.score.toString(),
+                                  style: TextStyle(
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                    color: position == 1 ? Colors.amber : null,
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+
+                      const SizedBox(height: 32),
+
+                      // Back to home button
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton(
+                          onPressed: () {
+                            context.go('/');
+                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppTheme.primaryColor,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                          child: const Text(
+                            'Back to Home',
+                            style: TextStyle(
+                              fontSize: 18,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                         ),
-                      const SizedBox(width: 8),
-                      Text(
-                        '${player.score}',
-                        style: const TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
+                      ),
+
+                      const SizedBox(height: 8),
+
+                      // Play again button
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton(
+                          onPressed: () {
+                            // Go to join room screen
+                            context.go('/join-room');
+                          },
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                          child: const Text(
+                            'Play Again',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ),
                       ),
                     ],
                   ),
-                );
-              },
+                ),
+              ),
             ),
           ),
-
-          const SizedBox(height: 32),
-          const Text(
-            'Next round starting soon...',
-            style: TextStyle(
-              fontSize: 16,
-              fontStyle: FontStyle.italic,
-              color: Colors.grey,
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildGameFinishedScreen(BuildContext context, GameFinished state) {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.emoji_events, size: 80, color: Colors.amber),
-          const SizedBox(height: 16),
-          const Text(
-            'Game Finished!',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 16),
-          Text(
-            '${state.winner.username} wins with ${state.winner.score} points!',
-            style: const TextStyle(fontSize: 18),
-            textAlign: TextAlign.center,
-          ),
-          const SizedBox(height: 32),
-
-          // Final scores
-          const Text(
-            'Final Scores:',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 16),
-
-          // Score list
-          SizedBox(
-            width: 300,
-            height: 200,
-            child: ListView.builder(
-              itemCount: state.room.players.length,
-              itemBuilder: (context, index) {
-                final player = state.room.players[index];
-                final isWinner = player.id == state.winner.id;
-
-                return ListTile(
-                  leading: CircleAvatar(
-                    backgroundColor:
-                        isWinner
-                            ? Colors.amber
-                            : Theme.of(context).colorScheme.primary,
-                    child:
-                        isWinner
-                            ? const Icon(
-                              Icons.emoji_events,
-                              color: Colors.white,
-                            )
-                            : Text(
-                              player.username.substring(0, 1).toUpperCase(),
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                  ),
-                  title: Text(
-                    player.username,
-                    style: TextStyle(
-                      fontWeight:
-                          isWinner ? FontWeight.bold : FontWeight.normal,
-                    ),
-                  ),
-                  trailing: Text(
-                    '${player.score}',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
-                      color: isWinner ? Colors.amber : null,
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-
-          const SizedBox(height: 32),
-          ElevatedButton(
-            onPressed: () {
-              context.go('/');
-            },
-            child: const Text('Back to Home'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSettingItem({
+  Widget _buildSettingColumn({
     required IconData icon,
     required String label,
     required String value,
+    bool highlight = false,
   }) {
     return Column(
       children: [
-        Icon(icon, color: Colors.grey),
+        Icon(
+          icon,
+          color: highlight ? AppTheme.accentColor : Colors.grey.shade700,
+          size: 24,
+        ),
         const SizedBox(height: 4),
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        Text(
+          label,
+          style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+        ),
+        const SizedBox(height: 2),
         Text(
           value,
-          style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.bold,
+            color: highlight ? AppTheme.accentColor : Colors.black,
+          ),
         ),
       ],
     );
   }
 
-  bool _canStartGame(GameInLobby state) {
-    // Check if there are at least 2 players
-    if (state.room.players.length < 2) {
-      return false;
+  Widget _buildPodiumPosition(
+    BuildContext context, {
+    required User player,
+    required int position,
+    required double height,
+  }) {
+    // Medal emoji based on position
+    String medal;
+    Color color;
+    double avatarSize;
+
+    if (position == 1) {
+      medal = '🥇';
+      color = Colors.amber;
+      avatarSize = 60;
+    } else if (position == 2) {
+      medal = '🥈';
+      color = Colors.grey.shade400;
+      avatarSize = 50;
+    } else {
+      medal = '🥉';
+      color = Colors.brown.shade300;
+      avatarSize = 40;
     }
 
-    // Check if all players are ready (except the host)
-    for (final player in state.room.players) {
-      if (player.id != state.room.host?.id && !player.isReady) {
-        return false;
-      }
-    }
+    return Container(
+      width: 100,
+      margin: const EdgeInsets.symmetric(horizontal: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Medal emoji
+          Text(medal, style: const TextStyle(fontSize: 24)),
 
-    return true;
+          // Player avatar
+          CircleAvatar(
+            radius: avatarSize / 2,
+            backgroundColor: color,
+            child: Text(
+              player.username.substring(0, 1).toUpperCase(),
+              style: TextStyle(
+                fontSize: position == 1 ? 32 : 24,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          // Player name
+          Text(
+            player.username,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: position == 1 ? 16 : 14,
+            ),
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+
+          // Player score
+          Text(
+            '${player.score} pts',
+            style: TextStyle(
+              fontSize: position == 1 ? 14 : 12,
+              color: Colors.grey.shade700,
+            ),
+          ),
+
+          const SizedBox(height: 4),
+
+          // Podium block
+          Container(
+            width: position == 1 ? 80 : 60,
+            height: height,
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(8),
+                topRight: Radius.circular(8),
+              ),
+              boxShadow: AppTheme.smallShadow,
+            ),
+            child: Center(
+              child: Text(
+                position.toString(),
+                style: const TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
-  bool _isPlayerReady(GameInLobby state, String playerId) {
+  bool _getReadyStatus(GameInLobby state, String userId) {
     final player = state.room.players.firstWhere(
-      (p) => p.id == playerId,
+      (p) => p.id == userId,
       orElse: () => throw Exception('Player not found'),
     );
 
@@ -763,5 +1655,160 @@ class _GameScreenState extends State<GameScreen> {
     }
 
     return hintCharacters.join('');
+  }
+
+  void _showLeaveGameDialog() {
+    showDialog(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('Leave Game?'),
+            content: const Text(
+              'Are you sure you want to leave the game? This action cannot be undone.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                child: const Text('Cancel'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  context.go('/');
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.red,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Leave Game'),
+              ),
+            ],
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+    );
+  }
+
+  void _showGameHelp() {
+    showDialog(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text('Game Rules'),
+            content: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildRuleItem(
+                    icon: Icons.brush,
+                    title: 'Drawing Phase',
+                    description:
+                        'Each round, one player draws a word while others guess.',
+                  ),
+                  const SizedBox(height: 16),
+                  _buildRuleItem(
+                    icon: Icons.chat,
+                    title: 'Guessing',
+                    description:
+                        'Type your guesses in the chat. Be the first to guess correctly for more points!',
+                  ),
+                  const SizedBox(height: 16),
+                  _buildRuleItem(
+                    icon: Icons.timer,
+                    title: 'Time Limit',
+                    description:
+                        'Each drawing phase has a time limit. Faster guesses earn more points!',
+                  ),
+                  const SizedBox(height: 16),
+                  _buildRuleItem(
+                    icon: Icons.emoji_events,
+                    title: 'Scoring',
+                    description:
+                        'First player to guess gets more points. Drawing player earns points for each correct guess.',
+                  ),
+                  const SizedBox(height: 16),
+                  _buildRuleItem(
+                    icon: Icons.repeat,
+                    title: 'Rounds',
+                    description:
+                        'Players take turns drawing. After all rounds, the player with the most points wins!',
+                  ),
+                  if (context.read<GameBloc>().state is GamePlaying &&
+                      (context.read<GameBloc>().state as GamePlaying)
+                          .room
+                          .useAI) ...[
+                    const SizedBox(height: 16),
+                    _buildRuleItem(
+                      icon: Icons.auto_fix_high,
+                      title: 'AI Mode',
+                      description:
+                          'Drawing players can use AI to help draw complex concepts.',
+                      color: AppTheme.accentColor,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            actions: [
+              ElevatedButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.primaryColor,
+                ),
+                child: const Text('Got it!'),
+              ),
+            ],
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+    );
+  }
+
+  Widget _buildRuleItem({
+    required IconData icon,
+    required String title,
+    required String description,
+    Color? color,
+  }) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(8),
+          decoration: BoxDecoration(
+            color: (color ?? AppTheme.primaryColor).withOpacity(0.1),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(icon, color: color ?? AppTheme.primaryColor, size: 24),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                description,
+                style: TextStyle(color: Colors.grey.shade700, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
   }
 }

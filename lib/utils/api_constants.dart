@@ -4,36 +4,33 @@ class ApiConstants {
   // static const String baseUrl = 'http://localhost:8000';  // For iOS simulator
   // static const String baseUrl = 'https://your-deployed-backend.com';  // Production
 
-  // WebSocket URL
-  static String wsUrl = 'ws${baseUrl.substring(4)}/ws';
+  // WebSocket URL - Derive from baseUrl by replacing http with ws
+  static String get wsUrl => 'ws${baseUrl.substring(4)}';
 
-  // API Endpoints
+  // Auth endpoints
   static const String login = '/api/login';
   static const String currentUser = '/api/users/me';
 
-  // Room Endpoints
+  // Room endpoints
   static const String rooms = '/api/rooms';
-  static const String joinRoom = '/api/rooms/{roomId}/join';
-  static const String leaveRoom = '/api/rooms/{roomId}/leave';
-  static const String readyStatus = '/api/rooms/{roomId}/ready';
+  static String joinRoom(String roomId) => '/api/rooms/$roomId/join';
+  static String leaveRoom(String roomId) => '/api/rooms/$roomId/leave';
+  static String readyStatus(String roomId) => '/api/rooms/$roomId/ready';
+  static String roomWebSocket(String roomId) => '$wsUrl/ws/room/$roomId';
 
-  // Game Endpoints
-  static const String startGame = '/api/games/rooms/{roomId}/start';
-  static const String selectWord = '/api/games/rooms/{roomId}/select-word';
-  static const String submitGuess = '/api/games/rooms/{roomId}/guess';
-  static const String gameState = '/api/games/rooms/{roomId}/state';
-  static const String nextRound = '/api/games/rooms/{roomId}/next-round';
-  static const String endGame = '/api/games/rooms/{roomId}/end-game';
+  // Game endpoints
+  static String startGame(String roomId) => '/api/games/rooms/$roomId/start';
+  static String selectWord(String roomId) =>
+      '/api/games/rooms/$roomId/select-word';
+  static String submitGuess(String roomId) => '/api/games/rooms/$roomId/guess';
+  static String gameState(String roomId) => '/api/games/rooms/$roomId/state';
+  static String nextRound(String roomId) =>
+      '/api/games/rooms/$roomId/next-round';
+  static String endGame(String roomId) => '/api/games/rooms/$roomId/end-game';
+  static String endRound(String roomId) => '/api/games/rooms/$roomId/end-round';
 
-  // Drawing Endpoints
-  static const String updateDrawing = '/api/drawings/rooms/{roomId}/update';
+  // Drawing endpoints
+  static String updateDrawing(String roomId) =>
+      '/api/drawings/rooms/$roomId/update';
   static const String generateAiDrawing = '/api/drawings/ai-generate';
-
-  // WebSocket Endpoint
-  static String roomWebSocket(String roomId) => '${wsUrl}/room/$roomId';
-
-  // Replace URL params
-  static String replaceRoomId(String url, String roomId) {
-    return url.replaceAll('{roomId}', roomId);
-  }
 }

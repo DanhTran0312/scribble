@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
+
 import '../models/user.dart';
 import '../utils/api_constants.dart';
 import 'api_client.dart';
@@ -27,6 +29,10 @@ class AuthService {
       try {
         await getCurrentUser();
       } catch (e) {
+        if (kDebugMode) {
+          print('Error getting current user: $e');
+        }
+
         // Token might be invalid, clear it
         await logout();
       }
@@ -51,6 +57,9 @@ class AuthService {
 
       return _currentUser!;
     } catch (e) {
+      if (kDebugMode) {
+        print('Error logging in: $e');
+      }
       rethrow;
     }
   }
@@ -76,23 +85,14 @@ class AuthService {
       _userController.add(_currentUser);
       return _currentUser;
     } catch (e) {
+      if (kDebugMode) {
+        print('Error getting current user: $e');
+      }
+
       // If unauthorized, clear token
       if (e is ApiException && e.statusCode == 401) {
         await logout();
       }
-      rethrow;
-    }
-  }
-
-  // Update user
-  Future<User> updateUser(User user) async {
-    try {
-      // In a full implementation, this would call an API endpoint
-      // For now, we'll just update locally
-      _currentUser = user;
-      _userController.add(_currentUser);
-      return _currentUser!;
-    } catch (e) {
       rethrow;
     }
   }
